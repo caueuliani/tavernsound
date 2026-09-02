@@ -1,0 +1,23 @@
+{
+  "name": "vtt-spatial-audio",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace=web",
+    "dev:api": "npm run start:dev --workspace=api",
+    "build:web": "npm run build --workspace=web",
+    "build:api": "npm run build --workspace=api"
+  },
+  "dependencies": {
+    "agora-access-token": "^2.0.4",
+    "agora-token": "^2.0.5",
+    "stripe": "^22.1.1"
+  },
+  "devDependencies": {
+    "@prisma/client": "^7.5.0",
+    "prisma": "^7.5.0"
+  }
+}
