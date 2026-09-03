@@ -10,6 +10,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 import { verifySession } from '../common/session.util';
+import { AudioPosition, SpatialAudioSettings, WallData } from './dto/room.dto';
 
 interface TokenData {
   id: string;
@@ -21,6 +22,8 @@ interface TokenData {
   hp?: number;
   maxHp?: number;
   imageUrl?: string;
+  audioEmitter?: boolean;
+  audioUrl?: string;
 }
 
 interface PlayerData {
@@ -31,6 +34,10 @@ interface PlayerData {
   roomId?: string;
   userId?: string;
   isHost?: boolean;
+  audioPosition?: AudioPosition;
+  isMuted?: boolean;
+  isDeafened?: boolean;
+  isSpeaking?: boolean;
 }
 
 interface RoomData {
@@ -42,14 +49,16 @@ interface RoomData {
   fogData?: boolean[];
   mapUrl?: string;
   ownerId?: string | null;
+  walls?: WallData[];
+  spatialAudioSettings?: SpatialAudioSettings;
 }
 
 @WebSocketGateway({
   cors: {
     // Função avaliada por request — lê a env var após o .env ter sido carregado
     origin: (_origin: string, cb: (err: Error | null, ok: boolean) => void) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000'
-      cb(null, !_origin || _origin === allowed)
+      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
+      cb(null, !_origin || _origin === allowed);
     },
     credentials: true,
   },
@@ -66,21 +75,21 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   // Lê e verifica (HMAC) o cookie user-session do handshake do Socket.IO
   private parseSessionCookie(client: Socket): { id: string; name: string; email: string } | null {
-    const cookieHeader = client.handshake.headers.cookie || ''
+    const cookieHeader = client.handshake.headers.cookie || '';
     for (const part of cookieHeader.split(';')) {
-      const eqIndex = part.indexOf('=')
-      if (eqIndex === -1) continue
-      const key = part.slice(0, eqIndex).trim()
-      if (key !== 'user-session') continue
+      const eqIndex = part.indexOf('=');
+      if (eqIndex === -1) continue;
+      const key = part.slice(0, eqIndex).trim();
+      if (key !== 'user-session') continue;
       try {
-        const raw = decodeURIComponent(part.slice(eqIndex + 1).trim())
-        const parsed = verifySession(raw)
-        if (parsed?.id) return parsed as { id: string; name: string; email: string }
+        const raw = decodeURIComponent(part.slice(eqIndex + 1).trim());
+        const parsed = verifySession(raw);
+        if (parsed?.id) return parsed as { id: string; name: string; email: string };
       } catch {
-        return null
+        return null;
       }
     }
-    return null
+    return null;
   }
 
   handleConnection(client: Socket) {
@@ -133,7 +142,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const roomId = this.generateRoomId();
     const roomName = data.name || `Sala de ${client.id.slice(0, 4)}`;
 
-    const session = this.parseSessionCookie(client)
+    const session = this.parseSessionCookie(client);
 
     // FREE tier: at most 1 active room per user
     if (session?.id) {
@@ -175,6 +184,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       createdAt: new Date(),
       players: new Map(),
       tokens: [],
+      walls: [],
+      spatialAudioSettings: {
+        maxDistance: 1000,
+        attenuationFactor: 1,
+        wallOcclusionFactor: 0.5,
+      },
     };
 
     this.rooms.set(roomId, room);
@@ -224,31 +239,34 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         fogData: Array.isArray(dbRoom.fogOfWarData) ? (dbRoom.fogOfWarData as boolean[]) : undefined,
         mapUrl: dbRoom.mapUrl ?? undefined,
         ownerId: dbRoom.ownerId,
+        walls: [],
+        spatialAudioSettings: {
+          maxDistance: 1000,
+          attenuationFactor: 1,
+          wallOcclusionFactor: 0.5,
+        },
       };
 
       this.rooms.set(data.roomId, room);
       console.log(`🔄 Sala ${data.roomId} restaurada do banco com ${restoredTokens.length} token(s)`);
     }
 
-    const session = this.parseSessionCookie(client)
+    const session = this.parseSessionCookie(client);
 
-    // Nome real do usuário autenticado; fallback aleatório para convidados
-    let playerName: string
+    let playerName: string;
     if (session?.name) {
-      playerName = session.name
+      playerName = session.name;
     } else {
-      const randomNames = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry']
+      const randomNames = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry'];
       playerName =
         randomNames[Math.floor(Math.random() * randomNames.length)] +
         '#' +
-        client.id.slice(0, 4)
+        client.id.slice(0, 4);
     }
 
-    // Se o ownerId não está na memória (veio de um room restaurado), buscamos se necessário
     const ownerId = room.ownerId;
     const isHost = ownerId ? ownerId === session?.id : room.players.size === 0;
 
-    // Enforce player limit based on room owner's subscription tier
     const PLAYER_LIMITS: Record<string, number> = { FREE: 4, BASIC: 6, PRO: 12, ENTERPRISE: 100 };
     if (ownerId) {
       const ownerSub = await this.prisma.subscription.findUnique({
@@ -256,7 +274,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         select: { tier: true, status: true },
       });
 
-      // Garante que o limite respeite o status da assinatura do dono da sala
       const isSubActive = ownerSub?.status === 'ACTIVE' || ownerSub?.status === 'TRIALING';
       const activeTier = isSubActive ? (ownerSub?.tier ?? 'FREE') : 'FREE';
       const limit = (PLAYER_LIMITS as Record<string, number>)[activeTier] || 4;
@@ -276,13 +293,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       roomId: data.roomId,
       userId: session?.id,
       isHost,
+      audioPosition: { x: 0, y: 0, z: 0 },
+      isMuted: false,
+      isDeafened: false,
+      isSpeaking: false,
     };
 
     this.players.set(client.id, playerData);
     room.players.set(client.id, playerData);
     client.join(data.roomId);
 
-    // Registrar entrada no banco (fire-and-forget)
     if (session?.id) {
       this.prisma.roomMember.create({
         data: {
@@ -291,10 +311,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           nickname: playerName,
           role: isHost ? 'HOST' : 'PLAYER',
         },
-      }).catch(() => {})
+      }).catch(() => {});
     }
 
-    // Últimas 30 rolagens e 50 mensagens de chat da sala
     const [recentRolls, chatEvents] = await Promise.all([
       this.prisma.diceRoll.findMany({
         where: { roomId: data.roomId },
@@ -320,8 +339,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         id: p.id,
         name: p.name,
         agoraUid: p.agoraUid,
+        audioPosition: p.audioPosition,
+        isMuted: p.isMuted,
+        isDeafened: p.isDeafened,
+        isSpeaking: p.isSpeaking,
       })),
       tokens: room.tokens,
+      walls: room.walls ?? [],
+      spatialAudioSettings: room.spatialAudioSettings,
       recentRolls: recentRolls.reverse().map(r => ({
         playerId: '',
         playerName: r.playerName,
@@ -332,12 +357,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         timestamp: r.createdAt.getTime(),
       })),
       chatHistory: chatEvents.reverse().map(e => {
-        const meta = e.metadata as any
+        const meta = e.metadata as any;
         return {
           playerName: meta?.playerName ?? 'Jogador',
           text: meta?.text ?? '',
           timestamp: e.timestamp.getTime(),
-        }
+        };
       }),
       fogData: room.fogData ?? null,
       mapUrl: room.mapUrl ?? null,
@@ -346,18 +371,125 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.to(data.roomId).emit('player-joined', {
       playerId: client.id,
       playerName,
+      audioPosition: playerData.audioPosition,
     });
 
     this.server.to(data.roomId).emit('room-player-count', {
       count: room.players.size,
     });
 
-    // Atualizar lastActiveAt sem bloquear a resposta
     this.prisma.room
       .update({ where: { id: data.roomId }, data: { updatedAt: new Date() } })
       .catch(() => {});
 
     console.log(`👤 ${playerName} entrou na sala ${data.roomId}`);
+  }
+
+  @SubscribeMessage('update-audio-position')
+  handleUpdateAudioPosition(
+    @MessageBody() data: { position: AudioPosition },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player || !player.roomId) return;
+
+    player.audioPosition = data.position;
+
+    client.to(player.roomId).emit('player-audio-position-updated', {
+      playerId: client.id,
+      position: data.position,
+    });
+  }
+
+  @SubscribeMessage('toggle-audio-mute')
+  handleToggleAudioMute(
+    @MessageBody() data: { isMuted: boolean },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player || !player.roomId) return;
+
+    player.isMuted = data.isMuted;
+
+    this.server.to(player.roomId).emit('player-audio-mute-updated', {
+      playerId: client.id,
+      isMuted: data.isMuted,
+    });
+  }
+
+  @SubscribeMessage('toggle-audio-deafen')
+  handleToggleAudioDeafen(
+    @MessageBody() data: { isDeafened: boolean },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player || !player.roomId) return;
+
+    player.isDeafened = data.isDeafened;
+
+    this.server.to(player.roomId).emit('player-audio-deafen-updated', {
+      playerId: client.id,
+      isDeafened: data.isDeafened,
+    });
+  }
+
+  @SubscribeMessage('update-audio-settings')
+  handleUpdateAudioSettings(
+    @MessageBody() data: { settings: SpatialAudioSettings },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player || !player.roomId || !player.isHost) return;
+
+    const room = this.rooms.get(player.roomId);
+    if (!room) return;
+
+    room.spatialAudioSettings = data.settings;
+
+    this.server.to(player.roomId).emit('spatial-audio-settings-updated', {
+      settings: data.settings,
+    });
+  }
+
+  @SubscribeMessage('sync-walls')
+  handleSyncWalls(
+    @MessageBody() data: { walls: WallData[] },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player || !player.roomId || !player.isHost) return;
+
+    const room = this.rooms.get(player.roomId);
+    if (!room) return;
+
+    room.walls = data.walls;
+
+    this.server.to(player.roomId).emit('walls-updated', {
+      walls: data.walls,
+    });
+  }
+
+  @SubscribeMessage('toggle-door')
+  handleToggleDoor(
+    @MessageBody() data: { wallId: string; isOpen: boolean },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player || !player.roomId) return;
+
+    const room = this.rooms.get(player.roomId);
+    if (!room || !room.walls) return;
+
+    const wall = room.walls.find(w => w.id === data.wallId);
+    if (wall && wall.isDoor) {
+      wall.isOpen = data.isOpen;
+
+      this.server.to(player.roomId).emit('door-toggled', {
+        wallId: data.wallId,
+        isOpen: data.isOpen,
+        toggledBy: player.name,
+      });
+    }
   }
 
   @SubscribeMessage('create-token')
@@ -389,7 +521,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     player.tokens.push(token);
     room.tokens.push(token);
 
-    // Upsert para ser seguro em caso de reconexão
     await this.prisma.token.upsert({
       where: { id: data.tokenId },
       create: {
@@ -430,6 +561,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       roomToken.y = data.y;
     }
 
+    // Se o token for do próprio jogador, atualizamos sua posição de áudio correspondente
+    player.audioPosition = { x: data.x, y: data.y, z: 0 };
+
     client.to(player.roomId).emit('token-moved', {
       tokenId: data.tokenId,
       x: data.x,
@@ -437,7 +571,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       playerId: client.id,
     });
 
-    // Fire-and-forget: atualiza posição no banco sem travar o evento
     this.prisma.token
       .update({ where: { id: data.tokenId }, data: { x: data.x, y: data.y } })
       .catch(() => {});
@@ -466,6 +599,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
+
+    player.isSpeaking = data.isSpeaking;
 
     client.to(player.roomId).emit('player-speaking-update', {
       playerId: client.id,
@@ -498,7 +633,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     this.server.to(player.roomId).emit('dice-rolled', rollData);
 
-    // Fire-and-forget: salva histórico sem travar o broadcast
     this.prisma.diceRoll
       .create({
         data: {
@@ -619,7 +753,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       imageData: data.imageData,
     });
 
-    // Imagens base64 são salvas no DB como imageUrl (substituível por URL de storage futuramente)
     this.prisma.token
       .update({ where: { id: data.tokenId }, data: { imageUrl: data.imageData } })
       .catch(() => {});
