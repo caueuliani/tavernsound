@@ -73,7 +73,8 @@ export default function RoomPage() {
             </span>
             <button
               onClick={async () => {
-                await fetch('/api/auth/logout', { method: 'POST' })
+                const response = await fetch('/api/auth/logout', { method: 'POST' })
+                if (!response.ok) { alert('Não foi possível sair. Tente novamente.'); return }
                 router.push('/login')
               }}
               style={{ background: 'none', border: 'none', color: '#a35d1e', cursor: 'pointer', fontSize: '0.75rem', padding: 0, textDecoration: 'underline' }}
@@ -86,7 +87,7 @@ export default function RoomPage() {
         <button
           onClick={() => {
             if (confirm('Deseja abandonar a taverna?')) {
-              router.push('/')
+              router.push('/rooms')
             }
           }}
           style={{
@@ -116,3 +117,4 @@ export default function RoomPage() {
     </div>
   )
 }
+

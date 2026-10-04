@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { isSessionClaims } from './app/lib/auth-security'
+import { allowTestRequest } from './app/lib/test-request-limit'
 
 // Edge runtime usa Web Crypto — não pode importar Node.js crypto
 async function isValidSession(value: string): Promise<boolean> {
+  if (value.length > 4096) return false
   const s = process.env.SESSION_SECRET || process.env.NEXTAUTH_SECRET
   if (!s) return false
 
@@ -25,18 +28,25 @@ async function isValidSession(value: string): Promise<boolean> {
       atob(sig.replace(/-/g, '+').replace(/_/g, '/')),
       c => c.charCodeAt(0),
     )
-    return crypto.subtle.verify('HMAC', key, sigBytes, enc.encode(data))
+    const valid = await crypto.subtle.verify('HMAC', key, sigBytes, enc.encode(data))
+    if (!valid) return false
+    const payload = Uint8Array.from(atob(data.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+    return isSessionClaims(JSON.parse(new TextDecoder().decode(payload)))
   } catch {
     return false
   }
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname.startsWith('/api/')) {
+    if (!allowTestRequest()) return NextResponse.json({ error: 'Limite de testes atingido. Aguarde um minuto.' }, { status: 429, headers: { 'Retry-After': '60', 'Cache-Control': 'no-store' } })
+    return NextResponse.next()
+  }
   const session = request.cookies.get('user-session')
   const authenticated = session?.value ? await isValidSession(session.value) : false
 
   if (!authenticated) {
-    const loginUrl = new URL('/login', request.url)
+    const loginUrl = new URL('/login', process.env.NEXTAUTH_URL || request.url)
     loginUrl.searchParams.set('callbackUrl', request.nextUrl.pathname)
     return NextResponse.redirect(loginUrl)
   }
@@ -45,5 +55,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/', '/room/:path*'],
+  matcher: ['/rooms/:path*', '/room/:path*', '/api/:path*'],
 }

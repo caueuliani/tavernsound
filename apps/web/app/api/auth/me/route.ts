@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { verifySession } from '../../lib/session'
+import { verifySession } from '@/lib/session'
 
 export async function GET() {
   const cookieStore = await cookies()
@@ -8,8 +8,13 @@ export async function GET() {
 
   if (!session?.value) return NextResponse.json({ user: null })
 
-  const user = verifySession(session.value)
-  if (!user?.id) return NextResponse.json({ user: null })
-
-  return NextResponse.json({ user })
+  if (!verifySession(session.value)?.id) return NextResponse.json({ user: null })
+  try {
+    const response = await fetch(`${process.env.API_URL || 'http://localhost:3001'}/auth/me`, {
+      headers: { cookie: `user-session=${encodeURIComponent(session.value)}` }, cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok) return NextResponse.json({ user: null }, { status: response.status })
+    return NextResponse.json(await response.json(), { headers: { 'Cache-Control': 'no-store' } })
+  } catch { return NextResponse.json({ error: 'Serviço indisponível.' }, { status: 503 }) }
 }

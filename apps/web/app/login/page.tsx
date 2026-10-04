@@ -2,11 +2,15 @@
 
 "use client"
 
-import { useState, useEffect } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { Suspense, useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
+import { safeReturnPath } from '../lib/auth-security'
 
 export default function LoginPage() {
-  const router = useRouter()
+  return <Suspense fallback={<p role="status">Carregando login…</p>}><LoginForm /></Suspense>
+}
+
+function LoginForm() {
   const searchParams = useSearchParams()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -42,14 +46,18 @@ export default function LoginPage() {
     setError("")
     setSuccess("")
     setLoading(true)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 20000)
 
     try {
       // Usa fetch direto em vez de signIn do NextAuth
-      const callbackUrl = searchParams.get('callbackUrl') || '/'
+      const callbackUrl = searchParams.get('callbackUrl') || '/rooms'
       const response = await fetch('/api/auth/callback/credentials', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, callbackUrl }),
+        credentials: 'same-origin',
+        signal: controller.signal,
       })
 
       const data = await response.json()
@@ -61,17 +69,22 @@ export default function LoginPage() {
       }
 
       if (data.success) {
-        // Redireciona para home
-        router.push(data.url || '/')
-        router.refresh()
+        const sessionResponse = await fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store', signal: controller.signal })
+        if (!sessionResponse.ok) throw new Error('Não foi possível confirmar a sessão. Tente novamente.')
+        const session = await sessionResponse.json()
+        if (!session.user) throw new Error('O navegador não manteve a sessão. Verifique se os cookies estão permitidos e se o certificado HTTPS está instalado como confiável.')
+        window.location.assign(safeReturnPath(data.url || '/rooms'))
       } else {
         setError("❌ Email ou senha incorretos")
         setLoading(false)
       }
       
     } catch (err) {
-      console.error('Erro no login:', err)
-      setError("❌ Erro ao fazer login")
+      setError(controller.signal.aborted
+        ? 'O servidor demorou para responder. Verifique a conexão com o notebook e tente novamente.'
+        : err instanceof Error ? err.message : 'Não foi possível entrar. Tente novamente.')
+    } finally {
+      clearTimeout(timeout)
       setLoading(false)
     }
   }
@@ -79,7 +92,7 @@ export default function LoginPage() {
   const handleGoogleLogin = async () => {
     setError("")
     // ✅ Usa a ação "signin" do NextAuth diretamente
-    const callbackUrl = searchParams.get('callbackUrl') || '/'
+    const callbackUrl = searchParams.get('callbackUrl') || '/rooms'
     window.location.href = `/api/auth/google?callbackUrl=${encodeURIComponent(callbackUrl)}`
   }
 
@@ -265,3 +278,4 @@ export default function LoginPage() {
     </div>
   )
 }
+

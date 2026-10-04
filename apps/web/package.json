@@ -9,23 +9,17 @@
   },
   "dependencies": {
     "agora-rtc-sdk-ng": "^4.24.2",
-    "bcryptjs": "^3.0.3",
-    "next": "16.1.6",
-    "next-auth": "^4.24.13",
+    "next": "16.3.6",
     "pixi.js": "^8.16.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
-    "@prisma/client": "^6.19.2",
-    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/socket.io-client": "^1.4.36",
     "babel-plugin-react-compiler": "1.0.0",
-    "prisma": "^6.19.2",
     "typescript": "^5"
   }
 }

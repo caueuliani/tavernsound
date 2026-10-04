@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { isSessionClaims } from './auth-security'
 
 function secret(): string {
   const s = process.env.SESSION_SECRET || process.env.NEXTAUTH_SECRET || ''
@@ -6,15 +7,9 @@ function secret(): string {
   return s
 }
 
-/** Assina o payload e retorna <base64url(json)>.<base64url(hmac)> */
-export function signSession(payload: object): string {
-  const data = Buffer.from(JSON.stringify(payload)).toString('base64url')
-  const sig = crypto.createHmac('sha256', secret()).update(data).digest('base64url')
-  return `${data}.${sig}`
-}
-
 /** Verifica assinatura e retorna o payload, ou null se inválido/adulterado */
 export function verifySession(token: string): Record<string, unknown> | null {
+  if (typeof token !== 'string' || token.length > 4096) return null
   const dot = token.lastIndexOf('.')
   if (dot === -1) return null
   const data = token.slice(0, dot)
@@ -25,7 +20,8 @@ export function verifySession(token: string): Record<string, unknown> | null {
     const expBuf = Buffer.from(expected, 'base64url')
     if (sigBuf.length !== expBuf.length) return null
     if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null
-    return JSON.parse(Buffer.from(data, 'base64url').toString('utf8')) as Record<string, unknown>
+    const claims = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'))
+    return isSessionClaims(claims) ? claims : null
   } catch {
     return null
   }

@@ -2,12 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react'
 import * as PIXI from 'pixi.js'
-import io from 'socket.io-client'
+import { io } from 'socket.io-client'
 import { useSpatialAudio } from '../hooks/useSpatialAudio'
 import DiceRoller from './DiceRoller'
 import DiceHistory from './DiceHistory'
-import MapUploader from './MapUploader'
+import SceneEditor from './SceneEditor'
+import type { Scene } from './SceneEditor'
 import ChatBox from './ChatBox'
+import RoomMembers from './RoomMembers'
+import { apiUrl, socketUrl } from '../lib/api-url'
 
 const GRID_SIZE = 500
 const CELL_SIZE = 50
@@ -38,6 +41,9 @@ interface Token {
   hp?: number
   maxHp?: number
   imageUrl?: string
+  portraitSprite?: PIXI.Sprite
+  portraitMask?: PIXI.Graphics
+  portraitRequest?: number
 }
 
 interface TokenEditorState {
@@ -62,15 +68,24 @@ export default function Grid({ roomId }: GridProps) {
 
   const [tokenCount, setTokenCount] = useState(0)
   const [connected, setConnected] = useState(false)
+  const [roomError, setRoomError] = useState('')
+  const [testMode, setTestMode] = useState(true)
+  const [testEndsAt, setTestEndsAt] = useState<number | null>(null)
   const [playerId, setPlayerId] = useState('')
   const [playerName, setPlayerName] = useState('')
   const playerNameRef = useRef('')
   const [myOwnToken, setMyOwnToken] = useState<Token | null>(null)
   const speakingUsersRef = useRef<Set<string>>(new Set())
   const pendingTokensRef = useRef<any[]>([])
+  const creatingTokenRef = useRef(false)
+  const addTokenRef = useRef<((token: any, own: boolean) => void) | null>(null)
   const [diceRolls, setDiceRolls] = useState<any[]>([])
   const [mapData, setMapData] = useState<string | null>(null)
   const [hasMap, setHasMap] = useState(false)
+  const [scene, setScene] = useState<Scene | null>(null)
+  const sceneRef = useRef(scene)
+  sceneRef.current = scene
+  const [canvasReady, setCanvasReady] = useState(false)
   const mapSpriteRef = useRef<any>(null)
 
   const [isHost, setIsHost] = useState(false)
@@ -91,13 +106,21 @@ export default function Grid({ roomId }: GridProps) {
   useEffect(() => { isHostRef.current = isHost }, [isHost])
   useEffect(() => { fogModeRef.current = fogMode }, [fogMode])
 
-  const { isConnected: audioConnected, isMuted, toggleMute, remoteUsers, updateSpatialAudio } = useSpatialAudio({
+  const { isConnected: audioConnected, playbackBlocked, enablePlayback, audioError, audioStatus, retryAudio, isMuted, toggleMute, remoteUsers, updateSpatialAudio } = useSpatialAudio({
     channelName: roomId,
     myToken: myOwnToken,
     allTokens: tokensRef.current,
+    walls: scene?.walls || [],
     maxDistance: 8,
     mySocketId: playerId,
     socket: socketRef.current,
+    onLocalSpeakingChange: speaking => {
+      const id = socketRef.current?.id
+      if (id) {
+        if (speaking) speakingUsersRef.current.add(id)
+        else speakingUsersRef.current.delete(id)
+      }
+    },
   })
 
   const handleRollDice = (formula: string, result: number, rolls: number[], modifier: number) => {
@@ -118,33 +141,27 @@ export default function Grid({ roomId }: GridProps) {
     setTokenEditor(null)
   }
 
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [uploadingPortrait, setUploadingPortrait] = useState(false)
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !imageTargetTokenIdRef.current) return
-    if (file.size > 2 * 1024 * 1024) { alert('Imagem máxima: 2MB'); return }
-
-    const reader = new FileReader()
-    reader.onload = ev => {
-      const img = new Image()
-      img.onload = () => {
-        const MAX = 256
-        const scale = Math.min(1, MAX / Math.max(img.width, img.height))
-        const canvas = document.createElement('canvas')
-        canvas.width = img.width * scale
-        canvas.height = img.height * scale
-        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
-        const base64 = canvas.toDataURL('image/jpeg', 0.7)
-        socketRef.current?.emit('update-token-image', {
-          tokenId: imageTargetTokenIdRef.current,
-          imageData: base64,
-        })
-      }
-      img.src = ev.target?.result as string
-    }
-    reader.readAsDataURL(file)
+    const tokenId = imageTargetTokenIdRef.current
     e.target.value = ''
+    if (!file || !tokenId || uploadingPortrait) return
+    if (file.size > 2 * 1024 * 1024) { setRoomError('Imagem máxima: 2 MB.'); return }
+    setUploadingPortrait(true)
+    setRoomError('')
+    try {
+      const body = new FormData()
+      body.append('file', file)
+      const response = await fetch(apiUrl(`/rooms/${roomId}/tokens/${tokenId}/image`), { method: 'POST', credentials: 'include', body })
+      const result = await response.json()
+      if (!response.ok) throw new Error(typeof result.message === 'string' ? result.message : 'Não foi possível salvar o retrato.')
+      for (const token of tokensRef.current.values()) {
+        if (token.id === tokenId) { token.imageUrl = result.imageData; applyTokenImage(token, token.graphics) }
+      }
+    } catch (error) { setRoomError(error instanceof Error ? error.message : 'Falha ao enviar retrato.') }
+    finally { setUploadingPortrait(false) }
   }
-
   // Redesenha a barra de HP de um token no PixiJS
   const renderHpBar = (token: Token) => {
     if (!token.hpBar) return
@@ -166,18 +183,24 @@ export default function Grid({ roomId }: GridProps) {
   // Aplica sprite de imagem ao token, mascarado em círculo
   const applyTokenImage = (token: Token, container: any) => {
     if (!token.imageUrl) return
+    const version = token.portraitRequest = (token.portraitRequest || 0) + 1
     const img = new Image()
     img.onload = () => {
+      if (token.portraitRequest !== version || container.destroyed) return
+      token.portraitSprite?.destroy({ texture: true, textureSource: true })
+      token.portraitMask?.destroy()
       const texture = PIXI.Texture.from(img)
       const sprite = new PIXI.Sprite(texture)
       sprite.anchor.set(0.5)
-      sprite.width = TOKEN_RADIUS * 2
-      sprite.height = TOKEN_RADIUS * 2
+      // Fill the circular portrait without stretching the character image.
+      sprite.scale.set(Math.max(TOKEN_RADIUS * 2 / img.naturalWidth, TOKEN_RADIUS * 2 / img.naturalHeight))
       const mask = new PIXI.Graphics()
       mask.circle(0, 0, TOKEN_RADIUS).fill(0xffffff)
       sprite.mask = mask
       container.addChild(mask)
       container.addChild(sprite)
+      token.portraitSprite = sprite
+      token.portraitMask = mask
       if (token.circleGraphic) token.circleGraphic.visible = false
     }
     img.src = token.imageUrl
@@ -186,18 +209,24 @@ export default function Grid({ roomId }: GridProps) {
   // ── Pixi + Socket ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (appRef.current) return
-    if (canvasRef.current?.children.length > 0) canvasRef.current.innerHTML = ''
+    if (canvasRef.current && canvasRef.current.children.length > 0) canvasRef.current.innerHTML = ''
 
-    const socket = io(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001')
+    const socket = io(socketUrl(), { withCredentials: true })
     socketRef.current = socket
 
     socket.on('connect', () => {
-      setConnected(true)
-      setPlayerId(socket.id || '')
+      setRoomError('')
       socket.emit('join-room', { roomId })
     })
 
+    socket.on('connect_error', () => setRoomError('Não foi possível conectar. Faça login novamente ou verifique o servidor.'))
+    socket.on('room-error', (data: { message: string }) => { creatingTokenRef.current = false; setRoomError(data.message) })
+
     socket.on('room-joined', (data: any) => {
+      setTestMode(data.testMode !== false)
+      setTestEndsAt(data.testEndsAt ?? null)
+      setConnected(true)
+      setPlayerId(socket.id || '')
       setPlayerName(data.playerName)
       playerNameRef.current = data.playerName
       setIsHost(Boolean(data.isHost))
@@ -207,7 +236,15 @@ export default function Grid({ roomId }: GridProps) {
         detail: { count: data.players.length },
       }))
 
-      if (data.tokens?.length > 0) pendingTokensRef.current = data.tokens
+      tokensRef.current.forEach(token => token.graphics.destroy({ children: true }))
+      tokensRef.current.clear()
+      setMyOwnToken(null)
+      creatingTokenRef.current = false
+      pendingTokensRef.current = data.tokens || []
+      if (addTokenRef.current) {
+        pendingTokensRef.current.forEach(t => addTokenRef.current!(t, t.playerId === socket.id))
+        pendingTokensRef.current = []
+      }
       if (data.recentRolls?.length > 0) setDiceRolls(data.recentRolls)
       if (data.chatHistory?.length > 0) setChatHistory(data.chatHistory)
 
@@ -226,7 +263,7 @@ export default function Grid({ roomId }: GridProps) {
       window.dispatchEvent(new CustomEvent('room-player-count', { detail: { count: data.count } }))
     })
 
-    socket.on('disconnect', () => setConnected(false))
+    socket.on('disconnect', () => { setConnected(false); setPlayerId('') })
 
     socket.on('player-speaking-update', (data: { playerId: string; isSpeaking: boolean }) => {
       const s = new Set(speakingUsersRef.current)
@@ -279,19 +316,18 @@ export default function Grid({ roomId }: GridProps) {
         gridGraphics.clear()
         const alpha = withMap ? 0.3 : 1
         for (let i = 0; i <= GRID_CELLS; i++) {
-          gridGraphics.lineStyle(1, 0x444444, alpha)
           gridGraphics.moveTo(i * CELL_SIZE, 0).lineTo(i * CELL_SIZE, GRID_SIZE)
         }
         for (let i = 0; i <= GRID_CELLS; i++) {
-          gridGraphics.lineStyle(1, 0x444444, alpha)
           gridGraphics.moveTo(0, i * CELL_SIZE).lineTo(GRID_SIZE, i * CELL_SIZE)
         }
+        gridGraphics.stroke({ width: 1, color: 0xb8a88a, alpha })
       }
       drawGrid(false)
 
       // Info label
       const infoText = new PIXI.Text({
-        text: 'Clique: criar token | Arraste: mover | Botão direito: editar',
+        text: 'Primeiro clique: criar | Próximos cliques ou arraste: mover',
         style: { fontFamily: 'Arial', fontSize: 10, fill: 0xaaaaaa, align: 'center' },
       })
       infoText.x = GRID_SIZE / 2 - infoText.width / 2
@@ -318,7 +354,9 @@ export default function Grid({ roomId }: GridProps) {
         const container = new PIXI.Container()
 
         const speakingIndicator = new PIXI.Graphics()
-        speakingIndicator.circle(0, 0, TOKEN_RADIUS + 8).stroke({ width: 4, color: AMBER, alpha: 0.8 })
+        speakingIndicator.circle(0, 0, TOKEN_RADIUS + 13).fill({ color: AMBER, alpha: 0.14 })
+        speakingIndicator.circle(0, 0, TOKEN_RADIUS + 9).stroke({ width: 2, color: AMBER, alpha: 0.45 })
+        speakingIndicator.circle(0, 0, TOKEN_RADIUS + 4).stroke({ width: 3, color: 0xffdf80, alpha: 1 })
         speakingIndicator.visible = false
         token.speakingIndicator = speakingIndicator
 
@@ -386,6 +424,7 @@ export default function Grid({ roomId }: GridProps) {
       }
 
       const addToken = (tokenData: Omit<Token, 'graphics'>, isOwn: boolean) => {
+        if (tokensRef.current.has(tokenData.playerId)) return
         const token: Token = { ...tokenData, isOwn, graphics: null as any }
         const container = createTokenGraphics(token, isOwn)
         token.graphics = container
@@ -395,6 +434,7 @@ export default function Grid({ roomId }: GridProps) {
         setTokenCount(tokensRef.current.size)
         if (isOwn) setMyOwnToken(token)
       }
+      addTokenRef.current = addToken
 
       if (pendingTokensRef.current.length > 0) {
         pendingTokensRef.current.forEach((t: any) => {
@@ -405,6 +445,7 @@ export default function Grid({ roomId }: GridProps) {
 
       socket.on('token-created', (tokenData: Token) => {
         const isOwn = tokenData.playerId === socket.id
+        if (isOwn) creatingTokenRef.current = false
         if (!tokensRef.current.has(tokenData.playerId)) addToken(tokenData, isOwn)
       })
 
@@ -449,7 +490,7 @@ export default function Grid({ roomId }: GridProps) {
       app.stage.hitArea = new PIXI.Rectangle(0, 0, GRID_SIZE, GRID_SIZE)
 
       app.stage.on('pointerdown', (event: PIXI.FederatedPointerEvent) => {
-        if (dragTargetRef.current) return
+        if (dragTargetRef.current || event.button !== 0 || !socket.connected) return
 
         const pos = event.global
         const gridX = pixelToGrid(pos.x)
@@ -469,10 +510,23 @@ export default function Grid({ roomId }: GridProps) {
 
         const isOccupied = Array.from(tokensRef.current.values()).some(t => t.x === gridX && t.y === gridY)
         if (!isOccupied && gridX >= 0 && gridX < GRID_CELLS && gridY >= 0 && gridY < GRID_CELLS) {
+          const own = tokensRef.current.get(socket.id || '')
+          if (own) {
+            own.x = gridX
+            own.y = gridY
+            own.graphics.position.set(gridToPixel(gridX), gridToPixel(gridY))
+            setMyOwnToken({ ...own })
+            socket.emit('move-token', { tokenId: own.id, x: gridX, y: gridY })
+            return
+          }
+          if (creatingTokenRef.current) return
+          creatingTokenRef.current = true
           const tokenId = `${socket.id}-${Date.now()}`
           const color = TOKEN_COLORS[tokensRef.current.size % TOKEN_COLORS.length]
-          addToken({ id: tokenId, x: gridX, y: gridY, color, playerId: socket.id || '', playerName: playerNameRef.current || 'Unknown' }, true)
-          socket.emit('create-token', { tokenId, x: gridX, y: gridY, color, playerName: playerNameRef.current || 'Unknown' })
+          socket.timeout(5000).emit('create-token', { tokenId, x: gridX, y: gridY, color, playerName: playerNameRef.current || 'Unknown' }, (error: Error | null) => {
+            creatingTokenRef.current = false
+            if (error && !tokensRef.current.has(socket.id || '')) setRoomError('Não foi possível confirmar o token. Tente novamente.')
+          })
         }
       })
 
@@ -519,6 +573,8 @@ export default function Grid({ roomId }: GridProps) {
         }
       })
 
+      // Keep a steady ring for users who prefer reduced motion.
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
       // Animação do indicador de fala
       app.ticker.add(() => {
         tokensRef.current.forEach(token => {
@@ -527,16 +583,17 @@ export default function Grid({ roomId }: GridProps) {
           token.speakingIndicator.visible = speaking
           if (speaking) {
             const t = Date.now() / 500
-            token.speakingIndicator.scale.set(1 + Math.sin(t) * 0.2)
-            token.speakingIndicator.alpha = 0.5 + Math.sin(t) * 0.3
+            token.speakingIndicator.scale.set(reducedMotion.matches ? 1 : 1 + Math.sin(t) * 0.07)
+            token.speakingIndicator.alpha = reducedMotion.matches ? 1 : 0.85 + Math.sin(t) * 0.15
           }
         })
       })
     }
 
-    initPixi()
+    void initPixi().then(() => setCanvasReady(true))
 
     return () => {
+      addTokenRef.current = null
       socketRef.current?.disconnect()
       socketRef.current = null
       appRef.current?.destroy(true, { children: true })
@@ -547,9 +604,12 @@ export default function Grid({ roomId }: GridProps) {
 
   // ── Mapa: recarregar quando muda ──────────────────────────────────────────
   useEffect(() => {
-    if (!appRef.current) return
+    if (!appRef.current || !canvasReady) return
     const app = appRef.current
     const mapContainer = app.stage.getChildAt(0) as any
+    let cancelled = false
+    const source = scene ? scene.map ? apiUrl(scene.map.url) : null : mapData
+    const settings = scene?.settings || { scale: 1, x: 0, y: 0, gridOpacity: .3 }
 
     if (mapSpriteRef.current) {
       mapContainer.removeChild(mapSpriteRef.current)
@@ -557,45 +617,70 @@ export default function Grid({ roomId }: GridProps) {
       mapSpriteRef.current = null
     }
 
-    if (mapData) {
+    if (source) {
       const img = new Image()
       img.onload = () => {
+        if (cancelled || appRef.current !== app) return
         const texture = PIXI.Texture.from(img)
         const sprite = new PIXI.Sprite(texture)
-        sprite.scale.set(Math.max(GRID_SIZE / img.width, GRID_SIZE / img.height))
-        sprite.anchor.set(0).position.set(0, 0)
+        const current = sceneRef.current?.settings || settings
+        sprite.scale.set(Math.min(GRID_SIZE / img.width, GRID_SIZE / img.height) * current.scale)
+        sprite.anchor.set(0)
+        sprite.position.set(current.x, current.y)
         mapContainer.addChild(sprite)
         mapSpriteRef.current = sprite
       }
-      img.src = mapData
+      img.onerror = () => { if (!cancelled) setRoomError('Não foi possível carregar a imagem do mapa. Recarregue o cenário.') }
+      img.src = source
     }
 
     const gridContainer = app.stage.getChildAt(1) as any
     const g = gridContainer.children[0] as PIXI.Graphics
     if (g) {
       g.clear()
-      const alpha = mapData ? 0.3 : 1
+      const alpha = settings.gridOpacity
       for (let i = 0; i <= GRID_CELLS; i++) {
-        g.lineStyle(1, 0x444444, alpha)
         g.moveTo(i * CELL_SIZE, 0).lineTo(i * CELL_SIZE, GRID_SIZE)
       }
       for (let i = 0; i <= GRID_CELLS; i++) {
-        g.lineStyle(1, 0x444444, alpha)
         g.moveTo(0, i * CELL_SIZE).lineTo(GRID_SIZE, i * CELL_SIZE)
       }
+      g.stroke({ width: 1, color: 0xb8a88a, alpha })
     }
-  }, [mapData])
+    return () => { cancelled = true }
+  }, [mapData, scene?.map?.url, canvasReady])
+
+  useEffect(() => {
+    if (!canvasReady || !appRef.current || !scene) return
+    const sprite = mapSpriteRef.current
+    if (sprite) {
+      sprite.scale.set(Math.min(GRID_SIZE / sprite.texture.width, GRID_SIZE / sprite.texture.height) * scene.settings.scale)
+      sprite.position.set(scene.settings.x, scene.settings.y)
+    }
+    const grid = (appRef.current.stage.getChildAt(1) as PIXI.Container).children[0] as PIXI.Graphics
+    grid.clear()
+    for (let i = 0; i <= GRID_CELLS; i++) {
+      grid.moveTo(i * CELL_SIZE, 0).lineTo(i * CELL_SIZE, GRID_SIZE)
+      grid.moveTo(0, i * CELL_SIZE).lineTo(GRID_SIZE, i * CELL_SIZE)
+    }
+    grid.stroke({ width: 1, color: 0xb8a88a, alpha: scene.settings.gridOpacity })
+  }, [canvasReady, scene?.settings])
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', color: '#f4e4bc' }}>
       {/* Coluna do canvas */}
       <div style={{ position: 'relative' }}>
+        {roomError && <p role="alert" style={{ color: '#ffb4ab' }}>{roomError}</p>}
+        <p><a href={`/room/${roomId}/scene`} style={{ color: '#ffc568' }}>Preparar cenário sem entrar no áudio →</a></p>
+        {isHost && connected && <RoomMembers roomId={roomId} />}
+        <SceneEditor roomId={roomId} socket={socketRef.current} connected={connected} isHost={isHost} onChange={setScene}>
         <div
           ref={canvasRef}
           onContextMenu={e => e.preventDefault()}
           style={{ border: '4px solid #3d2b1f', borderRadius: '4px', display: 'inline-block' }}
         />
+        </SceneEditor>
 
         {/* Painel editor de token (HP + imagem) */}
         {tokenEditor && (
@@ -656,25 +741,38 @@ export default function Grid({ roomId }: GridProps) {
           </div>
         )}
 
+        {myOwnToken && <button disabled={uploadingPortrait || !connected} onClick={() => { imageTargetTokenIdRef.current = myOwnToken.id; imageInputRef.current?.click() }} style={{ margin: '12px', padding: '10px' }}>{uploadingPortrait ? 'Enviando retrato…' : 'Trocar retrato do meu personagem'}</button>}
         {/* Input de imagem oculto */}
-        <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImageSelect} style={{ display: 'none' }} />
+        <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleImageSelect} style={{ display: 'none' }} />
 
         {/* Status + controles */}
+        {testMode && (
+          <p role="status" style={{ color: '#d4af37' }}>
+            Beta fechada · até 5 participantes · mapas com armazenamento local.
+            {testEndsAt && ` Esta sessão termina às ${new Date(testEndsAt).toLocaleTimeString()}.`}
+          </p>
+        )}
         <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'rgba(0,0,0,0.3)', borderRadius: '12px', fontSize: '0.85rem', color: '#888' }}>
           <p style={{ color: connected ? '#4ecdc4' : '#ff6b6b', margin: '0 0 4px' }}>
             {connected ? '✅ Conectado' : '❌ Desconectado'}
             {playerId && ` · ${playerId.slice(0, 8)}…`}
           </p>
           <p style={{ color: audioConnected ? '#ff9d00' : '#555', margin: '0 0 8px' }}>
-            {audioConnected ? '🔊 Áudio espacial ativo' : '⏳ Conectando áudio…'}
+            {audioConnected ? '🔊 Áudio espacial ativo' : audioError ? '⚠️ Áudio indisponível' : audioStatus}
           </p>
+          {audioError && <p role="alert" style={{ color: '#ffb4ab' }}>{audioError}</p>}
+          {!audioConnected && <button onClick={retryAudio} disabled={!connected}>Conectar áudio / tentar novamente</button>}
+          {audioConnected && playbackBlocked && (
+            <p role="status">O navegador pausou a reprodução. <button onClick={enablePlayback}>Ativar som neste aparelho</button></p>
+          )}
 
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <button
               onClick={toggleMute}
+              disabled={!audioConnected}
               style={{ padding: '0.4rem 0.75rem', background: isMuted ? '#555' : '#ff9d00', color: '#1a0f0a', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
             >
-              {isMuted ? '🔇 Mudo' : '🎤 Ativo'}
+              {!audioConnected ? '🎤 Desligado' : isMuted ? '🔇 Mudo' : '🎤 Ativo'}
             </button>
 
             {isHost && (
@@ -700,7 +798,6 @@ export default function Grid({ roomId }: GridProps) {
 
       {/* Painel lateral */}
       <div style={{ flex: 1, minWidth: '300px', maxWidth: '400px' }}>
-        <MapUploader onUpload={handleUploadMap} onRemove={handleRemoveMap} hasMap={hasMap} isHost={isHost} />
         <DiceRoller onRoll={handleRollDice} playerName={playerName} />
         <DiceHistory rolls={diceRolls} myPlayerId={playerId} />
         <ChatBox socket={socketRef.current} myPlayerName={playerName} initialMessages={chatHistory} />
@@ -708,3 +805,4 @@ export default function Grid({ roomId }: GridProps) {
     </div>
   )
 }
+

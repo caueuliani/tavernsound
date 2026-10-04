@@ -1,254 +1,53 @@
 'use client'
-
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import io from 'socket.io-client'
-import Image from 'next/image'
-
-// Cores baseadas no seu logo
-const COLORS = {
-  woodDark: '#1a0f0a',     // Fundo quase preto/madeira escura
-  amber: '#ff9d00',        // Brilho das ondas sonoras
-  gold: '#d4af37',         // Detalhes da caneca e fone
-  woodWarm: '#3d2b1f',     // Cor secundária de madeira
-  textLight: '#f4e4bc',    // Bege rústico para textos
-  accent: '#e67e22'        // Laranja vibrante para botões
-}
-
-export default function Home() {
-  const router = useRouter()
-  const [roomId, setRoomId] = useState('')
-  const [roomName, setRoomName] = useState('')
-  const [isCreating, setIsCreating] = useState(false)
-  const [createError, setCreateError] = useState('')
-
-  const handleCreateRoom = () => {
-    setIsCreating(true)
-    setCreateError('')
-    const socket = io(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001')
-
-    // Timeout de segurança: se o servidor não responder em 8s, desbloqueia o botão
-    const timeout = setTimeout(() => {
-      socket.disconnect()
-      setIsCreating(false)
-      setCreateError('Sem resposta do servidor. Tente novamente.')
-    }, 8000)
-
-    socket.on('room-error', (data: { message: string }) => {
-      clearTimeout(timeout)
-      socket.disconnect()
-      setIsCreating(false)
-      setCreateError(data.message)
-    })
-
-    socket.emit('create-room', { name: roomName || 'Nova Sala' }, (response: any) => {
-      clearTimeout(timeout)
-      socket.disconnect()
-      if (response?.roomId) {
-        router.push(`/room/${response.roomId}`)
-      } else {
-        setIsCreating(false)
-      }
-    })
-  }
-
-  const handleJoinRoom = () => {
-    if (roomId.trim()) {
-      router.push(`/room/${roomId.toUpperCase()}`)
-    }
-  }
-
-  return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      // Gradiente que imita a iluminação de uma taverna escura
-      background: `radial-gradient(circle at center, ${COLORS.woodWarm} 0%, ${COLORS.woodDark} 100%)`,
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-    }}>
-      <div style={{
-        background: 'rgba(26, 15, 10, 0.85)', // Semi-transparente para profundidade
-        borderRadius: '24px',
-        padding: '3rem',
-        boxShadow: `0 0 50px rgba(0,0,0,0.5), 0 0 20px ${COLORS.amber}22`,
-        maxWidth: '500px',
-        width: '90%',
-        border: `1px solid ${COLORS.woodWarm}`,
-        backdropFilter: 'blur(10px)'
-      }}>
-        {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
-          <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '15px' }}>
-            <img 
-              src="/assets/TavernSound_VTT_logo.png" 
-              alt="Logo"
-              style={{ width: '80px', height: '80px', objectFit: 'contain' }} 
-            />
-            <h1 style={{ 
-              fontSize: '2.2rem', 
-              margin: 0, 
-              background: `linear-gradient(to bottom, ${COLORS.amber}, ${COLORS.gold})`,
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              fontWeight: '900',
-              letterSpacing: '-0.02em',
-              lineHeight: '1'
-            }}>
-              TavernSound<br/><span style={{ fontSize: '1.2rem', opacity: 0.8 }}>VTT</span>
-            </h1>
-          </div>
-          <p style={{ color: COLORS.textLight, opacity: 0.7, marginTop: '0.5rem' }}>
-            Virtual Tabletop com Áudio Espacial 3D
-          </p>
-        </div>
-
-        {/* Criar Sala */}
-        <div style={{ 
-          marginBottom: '2rem',
-          padding: '1.5rem',
-          background: 'rgba(255,255,255,0.03)',
-          borderRadius: '16px',
-          border: `1px solid ${COLORS.woodWarm}`,
-        }}>
-          <h2 style={{ fontSize: '1.1rem', marginTop: 0, marginBottom: '1rem', color: COLORS.gold }}>
-             🆕 Criar Nova Sala
-          </h2>
-          
-          <input
-            type="text"
-            placeholder="Nome da sala (ex: Dungeon do Dragão)"
-            value={roomName}
-            onChange={(e) => setRoomName(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.85rem',
-              background: 'rgba(0,0,0,0.2)',
-              border: `1px solid ${COLORS.woodWarm}`,
-              borderRadius: '10px',
-              color: 'white',
-              fontSize: '1rem',
-              marginBottom: '1rem',
-              boxSizing: 'border-box',
-            }}
-          />
-          
-          {createError && (
-            <div style={{ padding: '0.6rem 0.85rem', marginBottom: '0.75rem', background: 'rgba(231,76,60,0.15)', border: '1px solid #e74c3c', borderRadius: '8px', color: '#e74c3c', fontSize: '0.85rem' }}>
-              {createError}
-              {createError.toLowerCase().includes('plano') && (
-                <div style={{ marginTop: '0.4rem' }}>
-                  <a href="/pricing" style={{ color: '#ff9d00', fontWeight: 'bold', textDecoration: 'underline' }}>
-                    Ver planos e fazer upgrade ✦
-                  </a>
-                </div>
-              )}
-            </div>
-          )}
-
-          <button
-            onClick={handleCreateRoom}
-            disabled={isCreating}
-            style={{
-              width: '100%',
-              padding: '0.85rem',
-              background: `linear-gradient(135deg, ${COLORS.amber} 0%, ${COLORS.accent} 100%)`,
-              color: COLORS.woodDark,
-              border: 'none',
-              borderRadius: '10px',
-              fontSize: '1rem',
-              fontWeight: 'bold',
-              cursor: isCreating ? 'not-allowed' : 'pointer',
-              opacity: isCreating ? 0.6 : 1,
-              transition: 'all 0.3s ease',
-              boxShadow: `0 4px 15px ${COLORS.amber}44`
-            }}
-            onMouseEnter={(e) => {
-              if (!isCreating) e.currentTarget.style.filter = 'brightness(1.2)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.filter = 'brightness(1)'
-            }}
-          >
-            {isCreating ? '⏳ Preparando Taverna...' : '🔥 Abrir Taverna'}
-          </button>
-        </div>
-
-        {/* Divisor */}
-        <div style={{ display: 'flex', alignItems: 'center', margin: '2rem 0', color: COLORS.woodWarm }}>
-          <div style={{ flex: 1, height: '1px', background: COLORS.woodWarm }} />
-          <span style={{ padding: '0 1rem', fontSize: '0.75rem', fontWeight: 'bold' }}>OU</span>
-          <div style={{ flex: 1, height: '1px', background: COLORS.woodWarm }} />
-        </div>
-
-        {/* Entrar na Sala */}
-        <div>
-          <h2 style={{ fontSize: '1.1rem', marginTop: 0, marginBottom: '1rem', color: COLORS.gold }}>
-            🚪 Entrar em uma Sala
-          </h2>
-          
-          <input
-            type="text"
-            placeholder="CÓDIGO DA SALA"
-            value={roomId}
-            onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-            style={{
-              width: '100%',
-              padding: '0.85rem',
-              background: 'rgba(0,0,0,0.2)',
-              border: `1px solid ${COLORS.woodWarm}`,
-              borderRadius: '10px',
-              color: COLORS.amber,
-              fontSize: '1.1rem',
-              fontWeight: 'bold',
-              textAlign: 'center',
-              marginBottom: '1rem',
-              boxSizing: 'border-box',
-              letterSpacing: '0.2em',
-            }}
-          />
-          
-          <button
-            onClick={handleJoinRoom}
-            disabled={!roomId.trim()}
-            style={{
-              width: '100%',
-              padding: '0.85rem',
-              background: 'transparent',
-              color: roomId.trim() ? COLORS.gold : '#555',
-              border: `2px solid ${roomId.trim() ? COLORS.gold : '#333'}`,
-              borderRadius: '10px',
-              fontSize: '1rem',
-              fontWeight: 'bold',
-              cursor: roomId.trim() ? 'pointer' : 'not-allowed',
-              transition: 'all 0.3s ease',
-            }}
-          >
-            🎯 Entrar na Mesa
-          </button>
-        </div>
-
-        {/* Footer Dica */}
-        <div style={{
-          marginTop: '2.5rem',
-          padding: '1rem',
-          background: 'rgba(255,157,0,0.05)',
-          borderRadius: '12px',
-          fontSize: '0.85rem',
-          color: COLORS.textLight,
-          textAlign: 'center',
-          border: `1px dashed ${COLORS.amber}33`
-        }}>
-          💡 <strong>Dica de Mestre:</strong> Use fones de ouvido para sentir o áudio espacial 3D em sua totalidade.
-        </div>
-
-        <div style={{ marginTop: '1rem', textAlign: 'center' }}>
-          <a href="/pricing" style={{ color: COLORS.accent, fontSize: '0.8rem', textDecoration: 'none', opacity: 0.8 }}>
-            Ver planos e preços ✦
-          </a>
-        </div>
+import Link from 'next/link'
+import s from './landing.module.css'
+const scenes = [
+  { name: 'A última taverna', place: 'Uma conversa antes da jornada', file: 'taverna', label: 'Taverna', positions: [{x:'36%',y:'40%'},{x:'59%',y:'54%'},{x:'43%',y:'71%'}] },
+  { name: 'Sob a fortaleza', place: 'Todo corredor guarda um segredo', file: 'masmorra', label: 'Masmorra', positions: [{x:'43%',y:'49%'},{x:'57%',y:'49%'},{x:'29%',y:'70%'}] },
+  { name: 'O eco das profundezas', place: 'Vozes entre pedra e cristal', file: 'caverna', label: 'Caverna', positions: [{x:'33%',y:'40%'},{x:'49%',y:'43%'},{x:'25%',y:'53%'}] },
+]
+const players = [
+  { name: 'Elara', role: 'Arqueira', color: '#8bbf9b', file: 'arqueira' },
+  { name: 'Brom', role: 'Guerreiro', color: '#d7a36d', file: 'guerreiro' },
+  { name: 'Nyx', role: 'Maga', color: '#b6a2e0', file: 'maga' },
+]
+export default function LandingPage() {
+  const [selected, setSelected] = useState(0)
+  const scene = scenes[selected]
+  return <main className={s.page}>
+    <a className={s.skip} href="#aventura">Pular para o conteúdo</a>
+    <header className={s.header}>
+      <Link href="/" className={s.brand} aria-label="TavernSound, início"><span className={s.mark}>TS</span><span>Tavern<span className={s.gold}>Sound</span><small>VIRTUAL TABLETOP</small></span></Link>
+      <nav aria-label="Navegação principal"><a href="#experiencia">A experiência</a><a href="#mesas">Explore as mesas</a></nav>
+      <Link className={s.navButton} href="/rooms">Vamos jogar ↗</Link>
+    </header>
+    <section className={s.hero} id="aventura">
+      <div><p className={s.eyebrow}>✦ SUA PRÓXIMA HISTÓRIA COMEÇA AQUI</p><h1>Uma mesa.<br />Mil histórias.<br /><em>Ouça cada uma.</em></h1>
+        <p className={s.intro}>Reúna seu grupo, abra o mapa e entre na aventura. Um tabletop virtual onde a posição dos personagens também faz parte da conversa.</p>
+        <div className={s.actions}><Link className={s.primary} href="/rooms">Entrar na aventura <span>↗</span></Link><a className={s.secondary} href="#mesas">Conhecer as mesas ↓</a></div>
+        <p className={s.beta}>● Em desenvolvimento · acesso de teste por convite</p>
       </div>
-    </div>
-  )
+      <div className={s.showcase} id="mesas">
+        <div className={s.tableHeader}><span>● MESA DE DEMONSTRAÇÃO</span><span>03 AVENTUREIROS</span></div>
+        <div className={s.board}>
+          <img className={s.map} src={`/maps/${scene.file}.svg`} alt={`Mapa ilustrado: ${scene.label}`} />
+          <div className={s.grid} /><div className={s.aura} style={{left:scene.positions[0].x,top:scene.positions[0].y}} />
+          {players.map((p,i) => <div key={p.name} className={`${s.token} ${i===0?s.speaking:''}`} style={{left:scene.positions[i].x,top:scene.positions[i].y,borderColor:p.color}}><img src={`/tokens/${p.file}.svg`} alt={`${p.name}, ${p.role}`} /><span className={s.tokenName}>{p.name}{i===0 && <b aria-label="Efeito ilustrativo de fala"> ▂▆▃</b>}</span></div>)}
+          <div className={s.sceneCaption}><small>CENÁRIO {String(selected+1).padStart(2,'0')}</small><h2>{scene.name}</h2><p>{scene.place}</p></div><span className={s.compass} aria-hidden="true">N<br />✧</span>
+        </div>
+        <div className={s.scenePicker} aria-label="Escolha um cenário de demonstração">{scenes.map((item,i)=><button type="button" key={item.file} aria-pressed={selected===i} onClick={()=>setSelected(i)}><span>0{i+1}</span>{item.label}</button>)}</div>
+        <p className={s.demoNote}>Prévia ilustrativa: troque o cenário para explorar. O áudio acontece dentro da sala.</p>
+      </div>
+    </section>
+    <section className={s.features} id="experiencia" aria-labelledby="experience-title">
+      <div><p className={s.eyebrow}>MENOS DISTÂNCIA. MAIS IMERSÃO.</p><h2 id="experience-title">O cenário também<br />participa da história.</h2><p>Da primeira conversa na taverna ao último encontro na masmorra, dê espaço para a sua campanha acontecer.</p></div>
+      <article><span className={s.icon} aria-hidden="true">◎</span><small>01 / PRESENÇA</small><h3>Vozes com lugar</h3><p>Áudio espacial conectado à posição dos personagens. A distância e as barreiras do mapa influenciam o que você ouve.</p></article>
+      <article><span className={s.icon} aria-hidden="true">⌘</span><small>02 / CENÁRIOS</small><h3>Uma mesa do seu jeito</h3><p>Importe seu mapa e desenhe paredes, portas e contornos de cavernas para preparar o próximo encontro.</p></article>
+      <article><span className={s.icon} aria-hidden="true">✧</span><small>03 / COMPANHIA</small><h3>A história é de vocês</h3><p>O mestre prepara a sala, os jogadores chegam com seus personagens. Tokens, dados e conversa no mesmo lugar.</p></article>
+    </section>
+    <section className={s.invitation}><div><p className={s.eyebrow}>GUARDE UM LUGAR PARA SEU GRUPO</p><h2>A próxima sessão<br />começa com um convite.</h2></div><div><Link className={s.primary} href="/rooms">Vamos jogar <span>↗</span></Link><p>Entre na sua conta para acessar suas salas.</p></div></section>
+    <footer className={s.footer}><span>TavernSound <span className={s.gold}>✧</span> Feito para histórias compartilhadas.</span><span>Uma aventura em construção.</span></footer>
+  </main>
 }
+

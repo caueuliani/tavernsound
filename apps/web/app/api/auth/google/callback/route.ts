@@ -1,15 +1,20 @@
 import { NextResponse } from 'next/server'
-import { signSession } from '../../../lib/session'
+import { cookies } from 'next/headers'
+import { safeReturnPath } from '@/lib/auth-security'
+import { OAUTH_COOKIE, oauthCookieOptions, readOAuthAttempt } from '@/lib/oauth'
 
 const API_URL = process.env.API_URL || 'http://localhost:3001'
 
 export async function GET(request: Request) {
+  const publicOrigin = process.env.NEXTAUTH_URL || request.url
   const { searchParams } = new URL(request.url)
   const code = searchParams.get('code')
-  const state = searchParams.get('state') || '/'
+  const cookieStore = await cookies()
+  const attempt = readOAuthAttempt(cookieStore.get(OAUTH_COOKIE)?.value, searchParams.get('state'))
+  cookieStore.set(OAUTH_COOKIE, '', { ...oauthCookieOptions, maxAge: 0 })
 
-  if (!code) {
-    return NextResponse.redirect(new URL('/login?error=OAuthCallback', request.url))
+  if (!code || !attempt) {
+    return NextResponse.redirect(new URL('/login?error=OAuthCallback', publicOrigin))
   }
 
   try {
@@ -23,11 +28,12 @@ export async function GET(request: Request) {
         client_secret: process.env.GOOGLE_CLIENT_SECRET!,
         redirect_uri: `${process.env.NEXTAUTH_URL}/api/auth/google/callback`,
         grant_type: 'authorization_code',
+        code_verifier: attempt.verifier,
       }),
     })
 
     if (!tokenRes.ok) {
-      return NextResponse.redirect(new URL('/login?error=OAuthCallback', request.url))
+      return NextResponse.redirect(new URL('/login?error=OAuthCallback', publicOrigin))
     }
 
     const { access_token } = await tokenRes.json()
@@ -38,10 +44,13 @@ export async function GET(request: Request) {
     })
 
     if (!userRes.ok) {
-      return NextResponse.redirect(new URL('/login?error=OAuthCallback', request.url))
+      return NextResponse.redirect(new URL('/login?error=OAuthCallback', publicOrigin))
     }
 
     const googleUser = await userRes.json()
+    if (googleUser.verified_email !== true || typeof googleUser.email !== 'string' || typeof googleUser.id !== 'string') {
+      return NextResponse.redirect(new URL('/login?error=OAuthCallback', publicOrigin))
+    }
 
     // 3. Registra/autentica no backend com X-Internal-Secret para impedir
     //    que o endpoint seja chamado diretamente por terceiros
@@ -55,26 +64,31 @@ export async function GET(request: Request) {
         email: googleUser.email,
         name: googleUser.name,
         avatarUrl: googleUser.picture,
+        providerAccountId: googleUser.id,
       }),
     })
 
     if (!backendRes.ok) {
-      return NextResponse.redirect(new URL('/login?error=OAuthCreateAccount', request.url))
+      return NextResponse.redirect(new URL('/login?error=OAuthCreateAccount', publicOrigin))
     }
 
     const data = await backendRes.json()
+    if (!data.success || !data.user || typeof data.sessionToken !== 'string') {
+      return NextResponse.redirect(new URL('/login?error=OAuthCallback', publicOrigin))
+    }
 
     // 4. Cria sessão assinada e redireciona
-    const redirectRes = NextResponse.redirect(new URL(state, request.url))
-    redirectRes.cookies.set('user-session', signSession(data.user), {
+    const redirectRes = NextResponse.redirect(new URL(safeReturnPath(attempt.returnTo), publicOrigin))
+    redirectRes.cookies.set('user-session', data.sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 60 * 60 * 24 * 7,
+      path: '/',
     })
 
     return redirectRes
   } catch {
-    return NextResponse.redirect(new URL('/login?error=OAuthCallback', request.url))
+    return NextResponse.redirect(new URL('/login?error=OAuthCallback', publicOrigin))
   }
 }

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000">
+<title>Masmorra dos Ecos — mapa de teste TavernSound</title>
+<defs><pattern id="tiles" width="50" height="50" patternUnits="userSpaceOnUse"><rect width="50" height="50" fill="#72746b"/><path d="M0 0H50V50H0Z" fill="none" stroke="#4b504c" stroke-width="3"/><path d="M5 8h14M32 41h9" stroke="#878980" stroke-width="2"/></pattern><g id="pillar"><circle r="29" fill="#303735"/><circle r="23" fill="#999b8d" stroke="#565e56" stroke-width="5"/><circle r="15" fill="#818777"/></g></defs>
+<rect width="1000" height="1000" fill="#202a28"/>
+<path d="M100 100H400V400H600V100H900V400H650V600H900V900H600V650H400V900H100V600H350V400H100Z" fill="url(#tiles)" stroke="#111d1b" stroke-width="25"/>
+<path d="M100 100H400V400H600V100H900V400H650V600H900V900H600V650H400V900H100V600H350V400H100Z" fill="none" stroke="#8d9282" stroke-width="9"/>
+<g stroke="#bd9556" stroke-width="12"><path d="M350 410h50M600 400h50M350 600h50M600 600h50"/></g>
+<g fill="#3c4b42" stroke="#8a9480" stroke-width="8"><rect x="145" y="155" width="65" height="165" rx="10"/><rect x="285" y="155" width="65" height="165" rx="10"/></g>
+<g stroke="#8a9480" stroke-width="4"><path d="M177 185v102m-17-80h35M317 185v102m-17-80h35"/></g>
+<use href="#pillar" x="675" y="175"/><use href="#pillar" x="825" y="175"/><use href="#pillar" x="675" y="325"/><use href="#pillar" x="825" y="325"/>
+<circle cx="750" cy="250" r="57" fill="#254c4a" stroke="#9baf91" stroke-width="7"/><circle cx="750" cy="250" r="37" fill="none" stroke="#588a78" stroke-width="3"/>
+<g fill="#8b643c" stroke="#392e20" stroke-width="6"><rect x="140" y="650" width="85" height="45"/><rect x="140" y="750" width="85" height="45"/><rect x="270" y="800" width="80" height="45"/></g>
+<g stroke="#c39c57" stroke-width="7"><path d="M181 650v45M181 750v45M310 800v45"/></g>
+<rect x="700" y="700" width="150" height="150" fill="#1a2625"/><path d="M710 715h130m-130 22h130m-130 22h130m-130 22h130m-130 22h130m-130 22h130" stroke="#737f71" stroke-width="9"/>
+<g fill="#aeb490" opacity=".55"><path d="m460 440 22 7-9 16-20-7Z"/><path d="m533 553 11-9 19 15-13 14Z"/><circle cx="858" cy="628" r="9"/></g>
+</svg>

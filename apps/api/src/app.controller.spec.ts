@@ -15,8 +15,12 @@ describe('AppController', () => {
   });
 
   describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
+    it('reports API availability with a timestamp', () => {
+      expect(appController.getHello()).toEqual({
+        message: '🎮 VTT API rodando com sucesso!',
+        status: 'ok',
+        timestamp: expect.any(String),
+      });
     });
   });
 });

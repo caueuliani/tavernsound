@@ -11,6 +11,8 @@ export function useVoiceDetection(
   config: VoiceDetectionConfig
 ) {
   const { onSpeakingChange, threshold = 0.01, smoothing = 0.8 } = config
+  const callbackRef = useRef(onSpeakingChange)
+  callbackRef.current = onSpeakingChange
 
   const analyserRef = useRef<AnalyserNode | null>(null)
   const dataArrayRef = useRef<Uint8Array | null>(null)
@@ -24,6 +26,9 @@ export function useVoiceDetection(
     try {
       const audioContext = new AudioContext()
       audioContextRef.current = audioContext
+      const resume = () => { void audioContext.resume().catch(() => {}) }
+      window.addEventListener('pointerdown', resume)
+      resume()
       
       const mediaStreamTrack = audioTrack.getMediaStreamTrack()
       const mediaStream = new MediaStream([mediaStreamTrack])
@@ -41,6 +46,7 @@ export function useVoiceDetection(
 
       console.log('🎙️ Detector de voz iniciado')
 
+      let lastVoiceAt = 0
       const detectVolume = () => {
         const analyser = analyserRef.current
         const dataArray = dataArrayRef.current
@@ -56,12 +62,12 @@ export function useVoiceDetection(
         }
         const average = sum / dataArray.length / 255
 
-        const speaking = average > threshold
+        if (average > threshold) lastVoiceAt = performance.now()
+        const speaking = lastVoiceAt > 0 && performance.now() - lastVoiceAt < 220
 
         if (speaking !== isSpeakingRef.current) {
           isSpeakingRef.current = speaking
-          onSpeakingChange(speaking)
-          console.log(speaking ? '🗣️ Falando' : '🤫 Silêncio', `(volume: ${(average * 100).toFixed(1)}%)`)
+          callbackRef.current(speaking)
         }
 
         rafIdRef.current = requestAnimationFrame(detectVolume)
@@ -74,13 +80,16 @@ export function useVoiceDetection(
           cancelAnimationFrame(rafIdRef.current)
         }
         source.disconnect()
+        window.removeEventListener('pointerdown', resume)
+        if (isSpeakingRef.current) callbackRef.current(false)
+        isSpeakingRef.current = false
         if (audioContextRef.current) {
-          audioContextRef.current.close()
+          void audioContext.close().catch(() => {})
         }
         console.log('🎙️ Detector de voz finalizado')
       }
     } catch (error) {
       console.error('❌ Erro ao iniciar detector de voz:', error)
     }
-  }, [audioTrack, threshold, smoothing, onSpeakingChange])
+  }, [audioTrack, threshold, smoothing])
 }
