@@ -1,12 +1,27 @@
 import { ForbiddenException } from '@nestjs/common';
 
-// Closed by default, including when deployment configuration is incomplete.
-export function testMode(): boolean {
+export type AppEnvironment = 'development' | 'beta' | 'production';
+
+// APP_ENV describes product rules; NODE_ENV only controls the runtime build.
+// An unset APP_ENV preserves existing TEST_MODE deployments and defaults to beta.
+export function appEnvironment(): AppEnvironment {
+  const environment = process.env.APP_ENV;
+  if (environment !== undefined) {
+    if (environment !== 'development' && environment !== 'beta' && environment !== 'production') {
+      throw new Error('APP_ENV must be development, beta or production');
+    }
+    return environment;
+  }
   const value = process.env.TEST_MODE;
   if (value !== undefined && value !== 'true' && value !== 'false') {
     throw new Error('TEST_MODE must be true or false');
   }
-  return value !== 'false';
+  if (value === 'false') return 'production';
+  return 'beta';
+}
+
+export function testMode(): boolean {
+  return appEnvironment() === 'beta';
 }
 
 export function requireTester(email: unknown): void {

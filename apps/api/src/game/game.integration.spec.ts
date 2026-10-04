@@ -107,10 +107,12 @@ describe('Socket and HTTP authentication integration (in-memory database double)
   describe('beta enforcement over real HTTP and WebSocket connections', () => {
     beforeEach(() => {
       budget = budgetDatabase();
+      process.env.APP_ENV = 'beta';
       process.env.TEST_MODE = 'true';
       process.env.TEST_ALLOWED_EMAILS = 'owner@example.test';
     });
     afterEach(() => {
+      process.env.APP_ENV = 'development';
       process.env.TEST_MODE = 'false';
       delete process.env.TEST_ALLOWED_EMAILS;
       jest.restoreAllMocks();

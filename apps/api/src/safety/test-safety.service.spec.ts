@@ -1,5 +1,5 @@
 import { TestSafetyService } from './test-safety.service';
-import { requireTester, TEST_LIMITS, testMode } from './test-policy';
+import { appEnvironment, requireTester, TEST_LIMITS, testMode } from './test-policy';
 import { budgetDatabase } from './test-database.double';
 
 describe('Closed beta limits (transaction double)', () => {
@@ -7,9 +7,12 @@ describe('Closed beta limits (transaction double)', () => {
   let safety: TestSafetyService;
   let now: number;
   const previousMode = process.env.TEST_MODE;
+  const previousEnvironment = process.env.APP_ENV;
+  const previousNodeEnvironment = process.env.NODE_ENV;
   const previousEmails = process.env.TEST_ALLOWED_EMAILS;
   beforeEach(() => {
     process.env.TEST_MODE = 'true';
+    process.env.APP_ENV = 'beta';
     process.env.TEST_ALLOWED_EMAILS = 'owner@example.test';
     now = Date.parse('2026-09-25T12:00:00Z');
     jest.spyOn(Date, 'now').mockImplementation(() => now);
@@ -18,10 +21,13 @@ describe('Closed beta limits (transaction double)', () => {
   afterEach(() => {
     jest.restoreAllMocks();
     if (previousMode === undefined) delete process.env.TEST_MODE; else process.env.TEST_MODE = previousMode;
+    if (previousEnvironment === undefined) delete process.env.APP_ENV; else process.env.APP_ENV = previousEnvironment;
+    if (previousNodeEnvironment === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousNodeEnvironment;
     if (previousEmails === undefined) delete process.env.TEST_ALLOWED_EMAILS; else process.env.TEST_ALLOWED_EMAILS = previousEmails;
   });
 
   it('defaults closed, rejects an empty allowlist, normalizes authorized email', () => {
+    delete process.env.APP_ENV;
     delete process.env.TEST_MODE;
     expect(testMode()).toBe(true);
     expect(() => requireTester(' OWNER@example.test ')).not.toThrow();
@@ -29,6 +35,28 @@ describe('Closed beta limits (transaction double)', () => {
     expect(() => requireTester('owner@example.test')).toThrow('Beta fechada');
     process.env.TEST_MODE = 'tru';
     expect(() => testMode()).toThrow('TEST_MODE');
+    process.env.TEST_MODE = 'false';
+    expect(appEnvironment()).toBe('production');
+  });
+  it('selects local, beta and production rules independently of NODE_ENV', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.APP_ENV = 'development';
+    expect(appEnvironment()).toBe('development');
+    expect(testMode()).toBe(false);
+    expect(() => requireTester('any@example.test')).not.toThrow();
+    await safety.admit('ABC123', 'owner', 's', 'c');
+    expect(db.state.participants).toHaveLength(0);
+
+    process.env.APP_ENV = 'beta';
+    expect(testMode()).toBe(true);
+    expect(() => requireTester('any@example.test')).toThrow('Beta fechada');
+
+    process.env.APP_ENV = 'production';
+    expect(testMode()).toBe(false);
+    expect(() => requireTester('any@example.test')).not.toThrow();
+
+    process.env.APP_ENV = 'invalid';
+    expect(() => appEnvironment()).toThrow('APP_ENV');
   });
   it('allows only one room even with concurrent creation attempts', async () => {
     const results = await Promise.allSettled(['ABC123', 'DEF456'].map(id => safety.createRoom({ id, name: 'Test', ownerId: 'owner' })));
@@ -45,6 +73,18 @@ describe('Closed beta limits (transaction double)', () => {
     await safety.admit('ABC123', 'owner', 's', 'c');
     await expect(safety.admit('DEF456', 'other', 's2', 'c2')).rejects.toThrow('Já existe');
     await expect(safety.admit('ABC123', 'owner', 's2', 'c2')).rejects.toThrow('já está conectada');
+  });
+  it('reclaims stale leases immediately after restart but keeps live duplicate and participant limits', async () => {
+    await safety.admit('ABC123', 'owner', 's', 'old');
+    const restarted = new TestSafetyService(db as any);
+    await expect(restarted.admit('ABC123', 'owner', 's', 'new', new Set(['new']))).resolves.toBeUndefined();
+    expect(db.state.participants).toHaveLength(1);
+    expect(db.state.participants[0].connectionId).toBe('new');
+    await expect(restarted.admit('ABC123', 'owner', 's', 'another', new Set(['new', 'another']))).rejects.toThrow('já está conectada');
+    for (let i = 1; i < TEST_LIMITS.participants; i++) {
+      await restarted.admit('ABC123', `u${i}`, `s${i}`, `c${i}`, new Set(['new', ...Array.from({ length: i }, (_, n) => `c${n + 1}`)]));
+    }
+    await expect(restarted.admit('ABC123', 'extra', 's', 'extra', new Set(['new', 'extra', ...Array.from({ length: 4 }, (_, n) => `c${n + 1}`)]))).rejects.toThrow('cinco participantes');
   });
   it('allows VTT reconnection after voice quota is exhausted', async () => {
     await safety.admit('ABC123', 'owner', 's', 'c');

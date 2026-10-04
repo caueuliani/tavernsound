@@ -331,7 +331,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         players: new Map(),
         tokens: restoredTokens,
         fogData: Array.isArray(dbRoom.fogOfWarData) ? (dbRoom.fogOfWarData as boolean[]) : undefined,
-        mapUrl: dbRoom.mapUrl ?? undefined,
+        mapUrl: dbRoom.mapUrl?.startsWith('db-webp:') ? undefined : dbRoom.mapUrl ?? undefined,
         ownerId: dbRoom.ownerId,
         walls: [],
         spatialAudioSettings: {
@@ -378,7 +378,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       }
     }
 
-    await this.safety.admit(data.roomId, session.id, session.sid, client.id);
+    // The Founders Beta runs one API instance; sockets absent here are leases left by a restart.
+    await this.safety.admit(data.roomId, session.id, session.sid, client.id, new Set(this.server.sockets.sockets.keys()));
     if (this.safety.enabled) {
       if (!client.connected) { await this.safety.release(client.id); return; }
       clearTimeout(client.data.lobbyTimer);

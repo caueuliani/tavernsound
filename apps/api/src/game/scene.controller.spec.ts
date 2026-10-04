@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -29,14 +29,16 @@ describe('Scene storage and permissions', () => {
     await rm(folder, { recursive: true, force: true });
   });
   const png = () => sharp({ create: { width: 64, height: 32, channels: 3, background: '#a87340' } }).png().toBuffer();
-  it('stores decoded WebP locally and reads it only after checking room access', async () => {
+  it('stores WebP with the scene in PostgreSQL and reads it after a restart without local files', async () => {
     const result = await controller.upload('ABC123', req, { buffer: await png() }, '0');
     expect(result.map?.url).toContain('/rooms/ABC123/scene/image');
     expect(result.map).not.toHaveProperty('file');
-    expect((await readdir(folder))).toHaveLength(1);
+    expect((await readdir(folder))).toHaveLength(0);
+    expect(room.mapUrl).toMatch(/^db-webp:/);
     expect(room.sceneData.map.width).toBe(64);
     const response = { set: jest.fn().mockReturnThis(), send: jest.fn() } as any;
-    await controller.image('ABC123', req, response);
+    const restarted = new SceneController(prisma, { require: jest.fn(async () => ({ id: 'user-1' })) } as any, access, gateway);
+    await restarted.image('ABC123', req, response);
     expect((await sharp(response.send.mock.calls[0][0]).metadata()).format).toBe('webp');
     access.require.mockRejectedValueOnce(new Error('forbidden'));
     await expect(controller.image('ABC123', req, response)).rejects.toThrow('forbidden');
@@ -51,11 +53,26 @@ describe('Scene storage and permissions', () => {
     await expect(controller.upload('ABC123', req, { buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50"/>') }, '0')).rejects.toThrow('PNG');
     expect(await readdir(folder)).toHaveLength(0);
   });
-  it('retains the previous image and cleans the new file on revision conflicts', async () => {
+  it('retains the previous image on revision conflicts', async () => {
     await controller.upload('ABC123', req, { buffer: await png() }, '0');
-    const oldFiles = await readdir(folder);
+    const oldMap = room.mapUrl;
     await expect(controller.upload('ABC123', req, { buffer: await png() }, '0')).rejects.toThrow('mudou');
-    expect(await readdir(folder)).toEqual(oldFiles);
+    expect(room.mapUrl).toBe(oldMap);
+    expect(await readdir(folder)).toHaveLength(0);
+  });
+  it('can still read an existing local map before backfill', async () => {
+    const file = 'f09190f8-0f8c-45e9-8c4f-4df42299cd2e.webp';
+    room.sceneData = { ...emptyScene(), map: { file, width: 64, height: 32 } };
+    await writeFile(path.join(folder, file), await sharp(await png()).webp().toBuffer());
+    const response = { set: jest.fn().mockReturnThis(), send: jest.fn() } as any;
+    await controller.image('ABC123', req, response);
+    expect((await sharp(response.send.mock.calls[0][0]).metadata()).format).toBe('webp');
+  });
+  it('removes the database image when the map is deleted', async () => {
+    await controller.upload('ABC123', req, { buffer: await png() }, '0');
+    await controller.remove('ABC123', req, '1');
+    expect(room.mapUrl).toBeNull();
+    expect(room.sceneData.map).toBeNull();
   });
   it('saves walls and door state, preserving the map and incrementing revision', async () => {
     await controller.upload('ABC123', req, { buffer: await png() }, '0');

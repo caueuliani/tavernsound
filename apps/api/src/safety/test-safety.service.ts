@@ -74,10 +74,10 @@ export class TestSafetyService {
     });
   }
 
-  async admit(roomId: string, userId: string, sid: string, connectionId: string): Promise<void> {
+  async admit(roomId: string, userId: string, sid: string, connectionId: string, activeConnections?: ReadonlySet<string>): Promise<void> {
     if (!this.enabled) return;
     return this.locked(async (state, _tx, now) => {
-      const leases = this.leases(state, now).filter(p => p.connectionId !== connectionId);
+      const leases = this.leases(state, now).filter(p => p.connectionId !== connectionId && (!activeConnections || activeConnections.has(p.connectionId)));
       if (leases.length && state.roomId !== roomId) throw new ForbiddenException('Já existe uma sala de teste ativa.');
       if (leases.some(p => p.userId === userId)) throw new ForbiddenException('Esta conta já está conectada. Feche a outra conexão ou aguarde 90 segundos.');
       if (leases.length >= TEST_LIMITS.participants) throw new ForbiddenException('A sala de testes permite até cinco participantes.');

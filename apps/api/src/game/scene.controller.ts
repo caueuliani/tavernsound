@@ -1,7 +1,7 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, NotFoundException, Param, Post, Put, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request, Response } from 'express';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
@@ -26,10 +26,13 @@ export class SceneController {
     if (!/^[a-f0-9-]{36}\.webp$/.test(file)) throw new NotFoundException('Mapa indisponível.');
     return path.join(this.folder, file);
   }
-  private async save(room: any, scene: SceneData, revision: string | undefined) {
+  private async save(room: any, scene: SceneData, revision: string | undefined, mapBytes?: Buffer | null) {
     if (revision !== String(readScene(room.sceneData).revision)) throw new ConflictException('O cenário mudou. Recarregue antes de salvar.');
     scene.revision++;
-    const result = await this.prisma.room.updateMany({ where: { id: room.id, updatedAt: room.updatedAt }, data: { sceneData: scene as any } });
+    const result = await this.prisma.room.updateMany({ where: { id: room.id, updatedAt: room.updatedAt }, data: {
+      sceneData: scene as any,
+      ...(mapBytes === undefined ? {} : { mapUrl: mapBytes ? `db-webp:${mapBytes.toString('base64')}` : null }),
+    } });
     if (result.count !== 1) throw new ConflictException('Outra alteração foi salva. Recarregue o cenário.');
     const visible = publicScene(room.id, scene);
     this.gateway.publishScene(room.id, visible);
@@ -48,7 +51,11 @@ export class SceneController {
     const map = readScene(room.sceneData).map;
     if (!map) throw new NotFoundException('Nenhum mapa salvo.');
     let bytes: Buffer;
-    try { bytes = await readFile(this.filePath(map.file)); } catch { throw new NotFoundException('Arquivo do mapa não encontrado.'); }
+    if (typeof room.mapUrl === 'string' && room.mapUrl.startsWith('db-webp:')) {
+      bytes = Buffer.from(room.mapUrl.slice('db-webp:'.length), 'base64');
+    } else {
+      try { bytes = await readFile(this.filePath(map.file)); } catch { throw new NotFoundException('Arquivo do mapa não encontrado.'); }
+    }
     res.set({ 'Content-Type': 'image/webp', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }).send(bytes);
   }
   @Put()
@@ -71,11 +78,7 @@ export class SceneController {
     if (result.data.length > 3 * 1024 * 1024) throw new BadRequestException('Imagem resultante muito grande.');
     const scene = readScene(room.sceneData);
     const filename = `${randomUUID()}.webp`;
-    await mkdir(this.folder, { recursive: true });
-    await writeFile(this.filePath(filename), result.data, { flag: 'wx' });
-    let saved: ReturnType<typeof publicScene>;
-    try { saved = await this.save(room, { ...scene, map: { file: filename, width: result.info.width, height: result.info.height } }, revision); }
-    catch (error) { await unlink(this.filePath(filename)).catch(() => {}); throw error; }
+    const saved = await this.save(room, { ...scene, map: { file: filename, width: result.info.width, height: result.info.height } }, revision, result.data);
     if (scene.map) await unlink(this.filePath(scene.map.file)).catch(() => {});
     return saved;
   }
@@ -83,7 +86,7 @@ export class SceneController {
   async remove(@Param('roomId') id: string, @Req() req: Request, @Headers('if-match') revision: string) {
     const room = await this.authorize(id, req, true);
     const scene = readScene(room.sceneData);
-    const saved = await this.save(room, { ...scene, map: null }, revision);
+    const saved = await this.save(room, { ...scene, map: null }, revision, null);
     if (scene.map) await unlink(this.filePath(scene.map.file)).catch(() => {});
     return saved;
   }
