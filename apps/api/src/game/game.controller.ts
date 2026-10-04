@@ -17,15 +17,15 @@ export class GameController {
   ) {
     const session = await this.sessions.require(req.headers.cookie);
     await this.access.require(channelName, session.id);
-    const testDeadline = await this.safety.voiceDeadline(channelName, session.id, session.sid);
-    const uid = this.sessions.voiceUid(session);
-
     const appId = process.env.AGORA_APP_ID;
     const appCertificate = process.env.AGORA_APP_CERTIFICATE;
 
     if (!appId || !appCertificate) {
       throw new ServiceUnavailableException('Voz ainda não configurada.');
     }
+
+    const testDeadline = await this.safety.voiceDeadline(channelName, session.id, session.sid);
+    const uid = this.sessions.voiceUid(session);
 
     const role = RtcRole.PUBLISHER;
     const expirationTimeInSeconds = 300;

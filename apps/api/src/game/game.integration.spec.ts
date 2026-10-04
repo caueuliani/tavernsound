@@ -6,6 +6,7 @@ import { AppModule } from '../app.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { SessionService } from '../auth/session.service';
 import { TestSafetyService } from '../safety/test-safety.service';
+import { TEST_LIMITS } from '../safety/test-policy';
 import { budgetDatabase } from '../safety/test-database.double';
 
 describe('Socket and HTTP authentication integration (in-memory database double)', () => {
@@ -128,19 +129,19 @@ describe('Socket and HTTP authentication integration (in-memory database double)
     it('blocks upload events before persisting map data', async () => {
       const socket = client(`user-session=${await sessions.create('owner')}`); await connect(socket);
       const joined = event(socket, 'room-joined'); socket.emit('join-room', { roomId: 'ABC123' });
-      expect(await joined).toMatchObject({ testMode: true, testEndsAt: expect.any(Number) });
+      expect(await joined).toMatchObject({ testMode: true, testEndsAt: null });
       const denied = event(socket, 'room-error');
       socket.emit('upload-map', { mapData: 'data:image/png;base64,AAAA', width: 10, height: 10 });
       expect((await denied).message).toContain('Uploads');
       expect(prisma.room.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ mapUrl: expect.anything() }) }));
     });
-    it('disconnects an idle participant at the session deadline without needing an event', async () => {
-      jest.spyOn(app.get(TestSafetyService), 'admit').mockResolvedValue(Date.now() + 500);
+    it('keeps the room connected after the voice quota is exhausted', async () => {
+      const localBudget = budget;
+      localBudget.state.reservedMinutes = TEST_LIMITS.dailyMinutes;
       const socket = client(`user-session=${await sessions.create('owner')}`); await connect(socket);
-      const joined = event(socket, 'room-joined'); socket.emit('join-room', { roomId: 'ABC123' }); await joined;
-      const stopped = event(socket, 'disconnect'); const message = event(socket, 'room-error');
-      expect((await message).message).toContain('Tempo de testes');
-      expect(await stopped).toBe('io server disconnect');
+      const joined = event(socket, 'room-joined'); socket.emit('join-room', { roomId: 'ABC123' });
+      expect(await joined).toMatchObject({ roomId: 'ABC123', testEndsAt: null });
+      expect(socket.connected).toBe(true);
     });
   });
 });

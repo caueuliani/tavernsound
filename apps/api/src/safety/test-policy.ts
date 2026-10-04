@@ -19,8 +19,8 @@ export function requireTester(email: unknown): void {
 
 export const TEST_LIMITS = Object.freeze({
   participants: 5,
-  sessionMs: 60 * 60 * 1000,
   dailyMinutes: 60,
+  voiceIntervalMs: 60_000,
   dailyOperations: 20_000,
   leaseMs: 90_000,
   heartbeatMs: 30_000,

@@ -137,7 +137,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         this.safety.rate(`socket-ip:${client.handshake.address}`, 60, 1000);
         this.safety.rate(`socket-user:${session.id}`, 20, 1000);
         if (this.safety.enabled && ['upload-map', 'update-token-image'].includes(_packet[0])) this.safety.requireUploads();
-        if (client.data.testEndsAt && Date.now() >= client.data.testEndsAt) throw new Error('Sessão de testes encerrada.');
         await this.safety.consumeOperation();
         client.data.session = await this.sessions.require(client.handshake.headers.cookie);
         const roomId = this.players.get(client.id)?.roomId;
@@ -158,7 +157,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     clearTimeout(client.data.testTimer);
     clearInterval(client.data.testHeartbeat);
     // Expiring leases are the fallback if the database is temporarily unavailable.
-    if (client.data.testEndsAt) void this.safety.release(client.id).catch(() => {});
+    if (this.safety.enabled) void this.safety.release(client.id).catch(() => {});
     console.log(`🔴 Cliente desconectado: ${client.id}`);
 
     const player = this.players.get(client.id);
@@ -379,17 +378,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       }
     }
 
-    const testEndsAt = await this.safety.admit(data.roomId, session.id, session.sid, client.id);
-    if (testEndsAt) {
-      client.data.testEndsAt = testEndsAt;
+    await this.safety.admit(data.roomId, session.id, session.sid, client.id);
+    if (this.safety.enabled) {
       if (!client.connected) { await this.safety.release(client.id); return; }
       clearTimeout(client.data.lobbyTimer);
       const stop = (message: string) => {
         client.emit('room-error', { message });
         client.disconnect(true);
       };
-      client.data.testTimer = setTimeout(() => stop('Tempo de testes encerrado. Retorne após 00:00 UTC.'), Math.max(0, testEndsAt - Date.now()));
-      client.data.testTimer.unref();
       let checking = false;
       client.data.testHeartbeat = setInterval(async () => {
         if (checking) return;
@@ -448,7 +444,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     client.emit('room-joined', {
       testMode: this.safety.enabled,
-      testEndsAt,
+      testEndsAt: null,
       roomId: data.roomId,
       roomName: room.name,
       playerName,

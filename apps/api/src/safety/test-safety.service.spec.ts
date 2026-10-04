@@ -39,47 +39,66 @@ describe('Closed beta limits (transaction double)', () => {
     const results = await Promise.allSettled(Array.from({ length: 6 }, (_, i) => (i % 2 ? other : safety).admit('ABC123', `u${i}`, `s${i}`, `c${i}`)));
     expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(5);
     expect(db.state.participants).toHaveLength(5);
-    expect(db.state.reservedMinutes).toBe(60);
+    expect(db.state.reservedMinutes).toBe(0);
   });
   it('rejects another room and duplicate account connections', async () => {
     await safety.admit('ABC123', 'owner', 's', 'c');
     await expect(safety.admit('DEF456', 'other', 's2', 'c2')).rejects.toThrow('Já existe');
     await expect(safety.admit('ABC123', 'owner', 's2', 'c2')).rejects.toThrow('já está conectada');
   });
-  it('reconnection and process replacement preserve the original deadline', async () => {
-    const deadline = await safety.admit('ABC123', 'owner', 's', 'c');
+  it('allows VTT reconnection after voice quota is exhausted', async () => {
+    await safety.admit('ABC123', 'owner', 's', 'c');
+    db.state.reservedMinutes = TEST_LIMITS.dailyMinutes;
     await safety.release('c'); now += 5 * 60_000;
     const restarted = new TestSafetyService(db as any);
-    expect(await restarted.admit('ABC123', 'owner', 's', 'new')).toBe(deadline);
-    now = deadline!;
-    await expect(restarted.admit('ABC123', 'owner', 's', 'again')).rejects.toThrow('Tempo diário');
-    now += 24 * 60 * 60_000;
-    await expect(restarted.admit('ABC123', 'owner', 's', 'tomorrow')).resolves.toBeGreaterThan(now);
+    await expect(restarted.admit('ABC123', 'owner', 's', 'new')).resolves.toBeUndefined();
+    await expect(restarted.voiceDeadline('ABC123', 'owner', 's')).rejects.toThrow('Cota diária de voz');
+    now += 86_400_000;
+    await expect(restarted.voiceDeadline('ABC123', 'owner', 's')).rejects.toThrow('Entre na sala');
   });
-  it('does not let a session cross the UTC daily reset', async () => {
-    now = Date.parse('2026-09-25T23:50:00Z');
-    expect(await safety.admit('ABC123', 'owner', 's', 'c')).toBe(Date.parse('2026-09-26T00:00:00Z'));
+  it('caps voice grants at the UTC daily reset', async () => {
+    now = Date.parse('2026-09-25T23:59:15Z');
+    await safety.admit('ABC123', 'owner', 's', 'c');
+    expect(await safety.voiceDeadline('ABC123', 'owner', 's')).toBe(Date.parse('2026-09-26T00:00:00Z') / 1000);
   });
   it('requires a live matching session for voice and caps its token at the lease deadline', async () => {
     await expect(safety.voiceDeadline('ABC123', 'owner', 's')).rejects.toThrow('Entre na sala');
     await safety.admit('ABC123', 'owner', 's', 'c');
-    expect(await safety.voiceDeadline('ABC123', 'owner', 's')).toBe((now + TEST_LIMITS.leaseMs) / 1000);
+    expect(await safety.voiceDeadline('ABC123', 'owner', 's')).toBe((now + TEST_LIMITS.voiceIntervalMs) / 1000);
+    expect(db.state.reservedMinutes).toBe(1);
     await expect(safety.voiceDeadline('ABC123', 'owner', 'forged')).rejects.toThrow('Entre na sala');
     await safety.release('c');
     await expect(safety.voiceDeadline('ABC123', 'owner', 's')).rejects.toThrow('Entre na sala');
   });
-  it('expires abandoned leases and never extends the test window on heartbeat', async () => {
-    const end = await safety.admit('ABC123', 'owner', 's', 'c');
+  it('expires abandoned leases and keeps the VTT available', async () => {
+    await safety.admit('ABC123', 'owner', 's', 'c');
     now += 30_000; await safety.heartbeat('c');
-    expect(db.state.endsAt.getTime()).toBe(end);
     now += TEST_LIMITS.leaseMs;
     await expect(safety.heartbeat('c')).rejects.toThrow('expirada');
-    await expect(safety.admit('ABC123', 'owner', 's', 'new')).resolves.toBe(end);
+    await expect(safety.admit('ABC123', 'owner', 's', 'new')).resolves.toBeUndefined();
   });
-  it('does not issue near-expiry tokens that could cause an SDK renewal loop', async () => {
+  it('charges only short voice grants and preserves the quota across instances', async () => {
     await safety.admit('ABC123', 'owner', 's', 'c');
-    now += 60_000;
-    await expect(safety.voiceDeadline('ABC123', 'owner', 's')).rejects.toThrow('terminando');
+    const first = await safety.voiceDeadline('ABC123', 'owner', 's');
+    expect(await safety.voiceDeadline('ABC123', 'owner', 's')).toBe(first);
+    expect(db.state.reservedMinutes).toBe(1);
+    now += 30_000; await safety.heartbeat('c');
+    const second = await new TestSafetyService(db as any).voiceDeadline('ABC123', 'owner', 's');
+    expect(second).toBe(first + 60);
+    expect(db.state.reservedMinutes).toBe(2);
+  });
+  it('grants only the last available voice minute under concurrent requests', async () => {
+    await safety.admit('ABC123', 'owner', 's', 'c');
+    await safety.admit('ABC123', 'other', 's2', 'c2');
+    db.state.reservedMinutes = TEST_LIMITS.dailyMinutes - 1;
+    const other = new TestSafetyService(db as any);
+    const results = await Promise.allSettled([
+      safety.voiceDeadline('ABC123', 'owner', 's'),
+      other.voiceDeadline('ABC123', 'other', 's2'),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(db.state.reservedMinutes).toBe(TEST_LIMITS.dailyMinutes);
+    await expect(safety.heartbeat('c')).resolves.toBeUndefined();
   });
   it('enforces the last daily operation atomically and survives service replacement', async () => {
     await safety.consumeOperation(); db.state.operations = TEST_LIMITS.dailyOperations - 1;

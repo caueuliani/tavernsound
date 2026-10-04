@@ -356,6 +356,14 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
           }
           return result as { token: string; uid: string }
         }
+        setAudioStatus('Aguardando permissão do microfone…')
+        const localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+          encoderConfig: 'music_standard',
+        })
+        if (cancelled) { localAudioTrack.close(); await client.leave(); return }
+        localTrackRef.current = localAudioTrack
+        setLocalAudioTrack(localAudioTrack)
+
         const authorization = await fetchVoiceToken()
         if (cancelled) return
         const uid = await client.join(appId, channelName, authorization.token, authorization.uid)
@@ -379,14 +387,6 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
             agoraUid: uid.toString(),
           })
         }
-
-        setAudioStatus('Aguardando permissão do microfone…')
-        const localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-          encoderConfig: 'music_standard',
-        })
-        if (cancelled) { localAudioTrack.close(); await client.leave(); return }
-        localTrackRef.current = localAudioTrack
-        setLocalAudioTrack(localAudioTrack)
 
         await client.publish([localAudioTrack])
         if (cancelled) { localAudioTrack.close(); await client.leave(); return }
