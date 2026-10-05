@@ -108,6 +108,7 @@ export default function Grid({ roomId }: GridProps) {
 
   const { isConnected: audioConnected, playbackBlocked, enablePlayback, audioError, audioStatus, retryAudio, isMuted, toggleMute, remoteUsers, updateSpatialAudio } = useSpatialAudio({
     channelName: roomId,
+    isHost,
     myToken: myOwnToken,
     allTokens: tokensRef.current,
     walls: scene?.walls || [],

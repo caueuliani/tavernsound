@@ -62,9 +62,26 @@ describe('GameGateway regressions', () => {
     players.set('silent', { roomId: 'room-a' });
     gateway.handleAnnounceAgoraUid({ socketId: 'forged-socket', agoraUid: 'allowed-uid' }, client);
     expect(client.emit.mock.calls).toEqual([
-      ['agora-uid-announced', { socketId: 'early', agoraUid: 'early-uid' }],
+      ['agora-uid-announced', { socketId: 'early', agoraUid: 'early-uid', isHost: false }],
     ]);
-    expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid' });
+    expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid', isHost: true });
+  });
+
+  it('does not let a player claim global voice in the Agora announcement', () => {
+    const { player } = prepareRoom();
+    player.isHost = false;
+    client.data.session = { id: 'player' };
+    gateway.handleAnnounceAgoraUid({ socketId: client.id, agoraUid: 'allowed-uid', isHost: true } as any, client);
+    expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid', isHost: false });
+  });
+
+  it('relays mute state for both the host and a player', () => {
+    const { player } = prepareRoom();
+    gateway.handleToggleAudioMute({ isMuted: true }, client);
+    expect(broadcast).toHaveBeenLastCalledWith('player-audio-mute-updated', { playerId: client.id, isMuted: true });
+    player.isHost = false;
+    gateway.handleToggleAudioMute({ isMuted: false }, client);
+    expect(broadcast).toHaveBeenLastCalledWith('player-audio-mute-updated', { playerId: client.id, isMuted: false });
   });
 
   it('does not create anonymous rooms', async () => {

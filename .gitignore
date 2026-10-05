@@ -2,10 +2,14 @@ node_modules/
 .next/
 dist/
 .env
-.env.local
+.env.*
+!.env.example
 .DS_Store
 *.log
 .turbo/
 .aider*
 local-uploads/
-.neon
+.neon/
+.codex/
+skills-lock.json
+neon.ts

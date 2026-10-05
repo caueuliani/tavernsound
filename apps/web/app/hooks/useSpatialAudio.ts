@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useVoiceDetection } from './useVoiceDetection'
 import { apiUrl } from '../lib/api-url'
 import { installAgoraCompatibility } from '../lib/agora-compat'
+import { remoteVoiceMode, type VoiceRole } from './voice-mode'
 
 interface Token {
   id: string
@@ -26,6 +27,7 @@ interface WallData {
 interface SpatialAudioConfig {
   onLocalSpeakingChange?: (speaking: boolean) => void
   channelName: string
+  isHost: boolean
   myToken: Token | null
   allTokens: Map<string, Token>
   walls?: WallData[]
@@ -35,6 +37,7 @@ interface SpatialAudioConfig {
 }
 
 interface RemoteAudioNode {
+  spatial: boolean
   pannerNode: PannerNode
   gainNode: GainNode
   filterNode: BiquadFilterNode
@@ -44,6 +47,7 @@ interface RemoteAudioNode {
 export function useSpatialAudio(config: SpatialAudioConfig) {
   const {
     channelName,
+    isHost,
     myToken,
     allTokens,
     walls = [],
@@ -75,12 +79,15 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   isDeafenedRef.current = isDeafened
   const [remoteUsers, setRemoteUsers] = useState<Set<string>>(new Set())
   const socketToAgoraMapRef = useRef<Map<string, string>>(new Map())
+  const agoraVoiceRolesRef = useRef<Map<string, VoiceRole>>(new Map())
   const myAgoraUidRef = useRef<string>('')
 
   const [localAudioTrack, setLocalAudioTrack] = useState<any>(null)
 
   const myTokenRef = useRef<Token | null>(null)
   myTokenRef.current = myToken
+  const isHostRef = useRef(isHost)
+  isHostRef.current = isHost
 
   const wallsRef = useRef<WallData[]>(walls)
   wallsRef.current = walls
@@ -158,7 +165,29 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         .find(([_, uid]) => uid === agoraUid)?.[0]
 
       const remoteToken = socketId ? allTokens.get(socketId) : undefined
-      if (!currentToken || !remoteToken || isDeafenedRef.current) {
+      const mode = remoteVoiceMode(
+        isHostRef.current,
+        agoraVoiceRolesRef.current.get(agoraUid),
+        Boolean(currentToken),
+        Boolean(remoteToken),
+        isDeafenedRef.current,
+      )
+      if (mode === 'global') {
+        // Global voices bypass both the HRTF panner and the wall filter.
+        if (audioNode.spatial) {
+          audioNode.source.disconnect()
+          audioNode.source.connect(audioNode.gainNode)
+          audioNode.spatial = false
+        }
+        audioNode.gainNode.gain.setValueAtTime(1, audioContext.currentTime)
+        return
+      }
+      if (!audioNode.spatial) {
+        audioNode.source.disconnect()
+        audioNode.source.connect(audioNode.pannerNode)
+        audioNode.spatial = true
+      }
+      if (mode === 'silent' || !currentToken || !remoteToken) {
         audioNode.gainNode.gain.setValueAtTime(0, audioContext.currentTime)
         return
       }
@@ -299,6 +328,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
             gainNode.connect(currentAudioContext.destination)
 
             remoteAudioNodesRef.current.set(user.uid.toString(), {
+              spatial: true,
               pannerNode,
               filterNode,
               gainNode,
@@ -328,8 +358,12 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         })
 
         if (socket) {
-          socket.on('agora-uid-announced', (data: { socketId: string; agoraUid: string }) => {
+          socket.on('agora-uid-announced', (data: { socketId: string; agoraUid: string; isHost: boolean }) => {
+            for (const [socketId, uid] of socketToAgoraMapRef.current) {
+              if (uid === data.agoraUid && socketId !== data.socketId) socketToAgoraMapRef.current.delete(socketId)
+            }
             socketToAgoraMapRef.current.set(data.socketId, data.agoraUid)
+            agoraVoiceRolesRef.current.set(data.agoraUid, data.isHost === true ? 'host' : 'player')
             updateSpatialAudio()
           })
 
@@ -425,6 +459,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       })
       remoteAudioNodesRef.current.clear()
       socketToAgoraMapRef.current.clear()
+      agoraVoiceRolesRef.current.clear()
       setRemoteUsers(new Set())
       setPlaybackBlocked(false)
 
@@ -443,7 +478,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
   useEffect(() => {
     updateSpatialAudio()
-  }, [myToken?.x, myToken?.y, walls, isDeafened])
+  }, [isHost, myToken?.x, myToken?.y, walls, isDeafened])
 
   const toggleMute = () => {
     if (localTrackRef.current) {

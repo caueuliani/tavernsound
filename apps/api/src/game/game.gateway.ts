@@ -678,13 +678,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     // once this client has joined Agora and is ready to receive their IDs.
     for (const [socketId, peer] of this.players) {
       if (socketId !== client.id && peer.roomId === player.roomId && peer.agoraUid) {
-        client.emit('agora-uid-announced', { socketId, agoraUid: peer.agoraUid });
+        client.emit('agora-uid-announced', { socketId, agoraUid: peer.agoraUid, isHost: peer.isHost === true });
       }
     }
 
     this.server.to(player.roomId).emit('agora-uid-announced', {
       socketId: client.id,
       agoraUid: data.agoraUid,
+      isHost: player.isHost === true,
     });
   }
 
