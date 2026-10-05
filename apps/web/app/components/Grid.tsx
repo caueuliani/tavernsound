@@ -76,6 +76,7 @@ export default function Grid({ roomId }: GridProps) {
   const playerNameRef = useRef('')
   const [myOwnToken, setMyOwnToken] = useState<Token | null>(null)
   const speakingUsersRef = useRef<Set<string>>(new Set())
+  const hostSocketIdsRef = useRef<Set<string>>(new Set())
   const pendingTokensRef = useRef<any[]>([])
   const creatingTokenRef = useRef(false)
   const addTokenRef = useRef<((token: any, own: boolean) => void) | null>(null)
@@ -109,7 +110,7 @@ export default function Grid({ roomId }: GridProps) {
   const { isConnected: audioConnected, playbackBlocked, enablePlayback, audioError, audioStatus, retryAudio, isMuted, toggleMute, remoteUsers, updateSpatialAudio } = useSpatialAudio({
     channelName: roomId,
     isHost,
-    myToken: myOwnToken,
+    myToken: isHost ? null : myOwnToken,
     allTokens: tokensRef.current,
     walls: scene?.walls || [],
     maxDistance: 8,
@@ -232,6 +233,10 @@ export default function Grid({ roomId }: GridProps) {
       playerNameRef.current = data.playerName
       setIsHost(Boolean(data.isHost))
       isHostRef.current = Boolean(data.isHost)
+      hostSocketIdsRef.current = new Set(
+        (data.players || []).filter((player: { isHost?: boolean }) => player.isHost === true).map((player: { id: string }) => player.id),
+      )
+      if (data.isHost && socket.id) hostSocketIdsRef.current.add(socket.id)
 
       window.dispatchEvent(new CustomEvent('room-player-count', {
         detail: { count: data.players.length },
@@ -264,7 +269,12 @@ export default function Grid({ roomId }: GridProps) {
       window.dispatchEvent(new CustomEvent('room-player-count', { detail: { count: data.count } }))
     })
 
-    socket.on('disconnect', () => { setConnected(false); setPlayerId('') })
+    socket.on('disconnect', () => { setConnected(false); setPlayerId(''); hostSocketIdsRef.current.clear() })
+
+    socket.on('agora-uid-announced', (data: { socketId: string; isHost: boolean }) => {
+      if (data.isHost === true) hostSocketIdsRef.current.add(data.socketId)
+      else hostSocketIdsRef.current.delete(data.socketId)
+    })
 
     socket.on('player-speaking-update', (data: { playerId: string; isSpeaking: boolean }) => {
       const s = new Set(speakingUsersRef.current)
@@ -282,8 +292,10 @@ export default function Grid({ roomId }: GridProps) {
       fogCellsRef.current.forEach((cell, idx) => { cell.visible = !data.fogData[idx] })
     })
 
-    socket.on('player-joined', () => {})
-    socket.on('player-left', () => {})
+    socket.on('player-joined', (data: { playerId: string; isHost?: boolean }) => {
+      if (data.isHost === true) hostSocketIdsRef.current.add(data.playerId)
+    })
+    socket.on('player-left', (data: { playerId: string }) => { hostSocketIdsRef.current.delete(data.playerId) })
 
     const initPixi = async () => {
       if (appRef.current) return
@@ -402,7 +414,7 @@ export default function Grid({ roomId }: GridProps) {
           }
         })
 
-        if (isOwn) {
+        if (isOwn || isHostRef.current) {
           container.cursor = 'pointer'
           container.on('pointerdown', (event: PIXI.FederatedPointerEvent) => {
             event.stopPropagation()
@@ -433,7 +445,7 @@ export default function Grid({ roomId }: GridProps) {
         tokensContainer.addChild(container)
         tokensRef.current.set(tokenData.playerId, token)
         setTokenCount(tokensRef.current.size)
-        if (isOwn) setMyOwnToken(token)
+        if (isOwn && !isHostRef.current) setMyOwnToken(token)
       }
       addTokenRef.current = addToken
 
@@ -516,7 +528,7 @@ export default function Grid({ roomId }: GridProps) {
             own.x = gridX
             own.y = gridY
             own.graphics.position.set(gridToPixel(gridX), gridToPixel(gridY))
-            setMyOwnToken({ ...own })
+            if (!isHostRef.current) setMyOwnToken({ ...own })
             socket.emit('move-token', { tokenId: own.id, x: gridX, y: gridY })
             return
           }
@@ -555,7 +567,7 @@ export default function Grid({ roomId }: GridProps) {
             token.y = cy
             token.graphics.x = gridToPixel(cx)
             token.graphics.y = gridToPixel(cy)
-            if (token.isOwn) setMyOwnToken({ ...token })
+            if (token.isOwn && !isHostRef.current) setMyOwnToken({ ...token })
             socket.emit('move-token', { tokenId: token.id, x: cx, y: cy })
           }
 
@@ -580,7 +592,7 @@ export default function Grid({ roomId }: GridProps) {
       app.ticker.add(() => {
         tokensRef.current.forEach(token => {
           if (!token.speakingIndicator) return
-          const speaking = speakingUsersRef.current.has(token.playerId)
+          const speaking = !hostSocketIdsRef.current.has(token.playerId) && speakingUsersRef.current.has(token.playerId)
           token.speakingIndicator.visible = speaking
           if (speaking) {
             const t = Date.now() / 500

@@ -12,7 +12,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 import { SessionService } from '../auth/session.service';
 import { RoomAccessService } from './room-access.service';
-import { createHash, randomInt } from 'crypto';
+import { createHash, randomInt, randomUUID } from 'crypto';
 import { AudioPosition, SpatialAudioSettings, WallData } from './dto/room.dto';
 import { TestSafetyService } from '../safety/test-safety.service';
 import { TEST_LIMITS } from '../safety/test-policy';
@@ -311,6 +311,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         return;
       }
 
+      const legacyHostTokenId = dbRoom.ownerId
+        ? createHash('sha256').update(`${data.roomId}:${dbRoom.ownerId}`).digest('hex')
+        : null;
       // Tokens do banco usam o próprio id como playerId para garantir chaves únicas no frontend
       const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
         id: t.id,
@@ -318,7 +321,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         y: t.y,
         color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
         playerId: t.id,
-        playerName: t.name,
+        playerName: t.id === legacyHostTokenId ? 'Token antigo (sem vínculo)' : t.name,
         hp: t.hp ?? undefined,
         maxHp: t.maxHp ?? undefined,
         imageUrl: t.imageUrl ?? undefined,
@@ -408,7 +411,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       roomId: data.roomId,
       userId: session?.id,
       isHost,
-      audioPosition: { x: 0, y: 0, z: 0 },
+      audioPosition: isHost ? undefined : { x: 0, y: 0, z: 0 },
       isMuted: false,
       isDeafened: false,
       isSpeaking: false,
@@ -416,7 +419,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     const persistentTokenId = createHash('sha256').update(`${data.roomId}:${session.id}`).digest('hex');
     const ownToken = room.tokens.find(t => t.id === persistentTokenId);
-    if (ownToken) {
+    if (ownToken && !isHost) {
       this.server.to(data.roomId).emit('remove-player-tokens', { playerId: ownToken.playerId });
       ownToken.playerId = client.id;
       playerData.tokens.push(ownToken);
@@ -453,6 +456,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       players: Array.from(room.players.values()).map(p => ({
         id: p.id,
         name: p.name,
+        isHost: p.isHost === true,
         agoraUid: p.agoraUid,
         audioPosition: p.audioPosition,
         isMuted: p.isMuted,
@@ -486,6 +490,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     client.to(data.roomId).emit('player-joined', {
       playerId: client.id,
       playerName,
+      isHost,
       audioPosition: playerData.audioPosition,
     });
 
@@ -506,7 +511,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     @ConnectedSocket() client: Socket,
   ) {
     const player = this.players.get(client.id);
-    if (!player || !player.roomId) return;
+    if (!player || !player.roomId || player.isHost) return;
 
     player.audioPosition = data.position;
 
@@ -584,12 +589,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!room) return;
 
     const token: TokenData = {
-      id: createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex'),
+      id: player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex'),
       x: data.x,
       y: data.y,
       color: data.color,
       playerId: client.id,
-      playerName: data.playerName || player.name,
+      playerName: player.isHost ? 'Token de cenário' : data.playerName || player.name,
     };
 
     if (player.tokens.length) {
@@ -635,7 +640,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const room = this.rooms.get(player.roomId);
     if (!room) return;
 
-    const token = player.tokens.find(t => t.id === data.tokenId);
+    const token = player.tokens.find(t => t.id === data.tokenId) ??
+      (player.isHost ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id) : undefined);
     if (!token) return;
 
     token.x = data.x;
@@ -648,13 +654,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     }
 
     // Se o token for do próprio jogador, atualizamos sua posição de áudio correspondente
-    player.audioPosition = { x: data.x, y: data.y, z: 0 };
+    if (!player.isHost) player.audioPosition = { x: data.x, y: data.y, z: 0 };
 
     client.to(player.roomId).emit('token-moved', {
       tokenId: data.tokenId,
       x: data.x,
       y: data.y,
-      playerId: client.id,
+      playerId: token.playerId,
     });
 
     this.prisma.token

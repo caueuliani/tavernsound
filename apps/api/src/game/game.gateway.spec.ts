@@ -1,5 +1,6 @@
 import { GameGateway } from './game.gateway';
 import { TestSafetyService } from '../safety/test-safety.service';
+import { createHash } from 'crypto';
 
 describe('GameGateway regressions', () => {
   let gateway: GameGateway;
@@ -12,15 +13,17 @@ describe('GameGateway regressions', () => {
   beforeEach(() => {
     prisma = {
       subscription: { findUnique: jest.fn().mockResolvedValue(null) },
-      room: { count: jest.fn().mockResolvedValue(0), create: jest.fn().mockResolvedValue({}) },
-      token: { create: jest.fn(), update: jest.fn() },
+      room: { count: jest.fn().mockResolvedValue(0), create: jest.fn().mockResolvedValue({}), findUnique: jest.fn(), update: jest.fn().mockResolvedValue({}) },
+      token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}) },
+      diceRoll: { findMany: jest.fn().mockResolvedValue([]) },
+      event: { findMany: jest.fn().mockResolvedValue([]) },
     };
     sessions = { require: jest.fn(), on: jest.fn(), voiceUid: jest.fn().mockReturnValue('allowed-uid') };
     access = { require: jest.fn() };
     gateway = new GameGateway(prisma, sessions, access, new TestSafetyService(prisma));
-    client = { id: 'socket-1', data: {}, handshake: { headers: {} }, emit: jest.fn(), disconnect: jest.fn() };
+    client = { id: 'socket-1', data: {}, handshake: { headers: {} }, emit: jest.fn(), disconnect: jest.fn(), join: jest.fn(), to: jest.fn().mockReturnValue({ emit: jest.fn() }) };
     broadcast = jest.fn();
-    gateway.server = { to: jest.fn().mockReturnValue({ emit: broadcast }) } as any;
+    gateway.server = { to: jest.fn().mockReturnValue({ emit: broadcast }), sockets: { sockets: new Map([[client.id, client]]) } } as any;
   });
 
   it('does not load or disclose a private room to an unauthorized account', async () => {
@@ -52,6 +55,46 @@ describe('GameGateway regressions', () => {
     (gateway as any).rooms.set('room-a', room);
     return { player, room };
   };
+
+  const joinPersistedRoom = async (userId: string, tokenUserId: string) => {
+    const tokenId = createHash('sha256').update(`ABC123:${tokenUserId}`).digest('hex');
+    client.data.session = { id: userId, sid: 'session', name: userId };
+    access.require.mockResolvedValue({});
+    prisma.room.findUnique.mockResolvedValue({
+      id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
+      tokens: [{ id: tokenId, x: 3, y: 4, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
+    });
+    await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
+    const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
+    expect(joined).toBeDefined();
+    return { tokenId, joined, player: (gateway as any).players.get(client.id) };
+  };
+
+  it('keeps a persisted host token visible but detached from the host and its audio position', async () => {
+    const { tokenId, joined, player } = await joinPersistedRoom('owner', 'owner');
+    expect(joined).toMatchObject({ isHost: true, tokens: [{ id: tokenId, playerId: tokenId, playerName: 'Token antigo (sem vínculo)' }] });
+    expect(player.tokens).toHaveLength(0);
+    expect(player.audioPosition).toBeUndefined();
+    expect(broadcast).not.toHaveBeenCalledWith('token-created', expect.anything());
+    await gateway.handleCreateToken({ tokenId: 'ignored', x: 1, y: 2, color: 0xff9d00 }, client);
+    const createdId = prisma.token.create.mock.calls[0][0].data.id;
+    expect(createdId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(createdId).not.toBe(tokenId);
+    expect(player.audioPosition).toBeUndefined();
+    gateway.handleMoveToken({ tokenId, x: 5, y: 6 }, client);
+    expect(client.to().emit).toHaveBeenCalledWith('token-moved', expect.objectContaining({ tokenId, playerId: tokenId }));
+    gateway.handleUpdateAudioPosition({ position: { x: 9, y: 9, z: 0 } }, client);
+    expect(player.audioPosition).toBeUndefined();
+  });
+
+  it('still reconnects a normal player to their persisted personal token', async () => {
+    const { tokenId, joined, player } = await joinPersistedRoom('player', 'player');
+    expect(joined).toMatchObject({ isHost: false, tokens: [{ id: tokenId, playerId: client.id }] });
+    expect(player.tokens).toHaveLength(1);
+    expect(player.audioPosition).toEqual({ x: 3, y: 4, z: 0 });
+    gateway.handleMoveToken({ tokenId, x: 5, y: 6 }, client);
+    expect(player.audioPosition).toEqual({ x: 5, y: 6, z: 0 });
+  });
 
   it('replays existing voice identities to a late joiner without leaking other rooms', () => {
     prepareRoom();
