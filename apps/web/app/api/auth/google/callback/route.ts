@@ -65,6 +65,7 @@ export async function GET(request: Request) {
         name: googleUser.name,
         avatarUrl: googleUser.picture,
         providerAccountId: googleUser.id,
+        emailVerified: true,
       }),
     })
 

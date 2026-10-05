@@ -121,7 +121,7 @@ export class AuthController {
   @Post('google-login')
   @Header('Cache-Control', 'no-store')
   async googleLogin(
-    @Body() body: { email: string; name?: string; avatarUrl?: string; providerAccountId?: string },
+    @Body() body: { email: string; name?: string; avatarUrl?: string; providerAccountId?: string; emailVerified?: boolean },
     @Headers('x-internal-secret') internalSecret: string,
   ) {
     const expected = process.env.INTERNAL_API_SECRET;
@@ -129,24 +129,26 @@ export class AuthController {
       throw new HttpException('Não autorizado', HttpStatus.UNAUTHORIZED);
     }
 
-    const { email, name, avatarUrl, providerAccountId } = body;
-    requireTester(email);
-
-    if (!email || typeof providerAccountId !== 'string' || !providerAccountId) {
-      throw new HttpException('Email é obrigatório', HttpStatus.BAD_REQUEST);
+    const { name, avatarUrl, providerAccountId } = body;
+    if (body.emailVerified !== true || typeof body.email !== 'string' || body.email.length > 254 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) ||
+        typeof providerAccountId !== 'string' || !providerAccountId) {
+      throw new HttpException('Identidade Google inválida ou e-mail não verificado', HttpStatus.BAD_REQUEST);
     }
+    const email = body.email.trim().toLowerCase();
+    requireTester(email);
 
     const account = await this.prisma.account.findUnique({
       where: { provider_providerAccountId: { provider: 'google', providerAccountId } },
       include: { user: { include: { subscription: true } } },
     });
-    let user = account?.user ?? await this.prisma.user.findUnique({
-      where: { email }, include: { subscription: true },
+    const emailUser = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } }, include: { subscription: true },
     });
-
-    if (!account && user?.passwordHash) {
-      throw new HttpException('Entre com a senha desta conta. Vinculação Google deve ser explícita.', HttpStatus.CONFLICT);
+    if (account && emailUser && account.userId !== emailUser.id) {
+      throw new HttpException('Esta identidade Google já está vinculada a outra conta.', HttpStatus.CONFLICT);
     }
+    let user = account?.user ?? emailUser;
 
     if (!user) {
       // Cria novo usuário via Google

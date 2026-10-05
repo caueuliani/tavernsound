@@ -12,9 +12,11 @@ import { RoomAccessService } from './room-access.service';
 import { GameGateway } from './game.gateway';
 
 describe('Scene storage and permissions', () => {
+  const previousEnvironment = process.env.APP_ENV;
   let folder: string, controller: SceneController, room: any, prisma: any, access: any, gateway: any;
   const req = { headers: { cookie: 'test-cookie' } } as any;
   beforeEach(async () => {
+    process.env.APP_ENV = 'development';
     folder = await mkdtemp(path.join(tmpdir(), 'tavern-scene-test-'));
     process.env.LOCAL_UPLOAD_DIR = folder; process.env.LOCAL_MAP_UPLOADS = 'true';
     room = { id: 'ABC123', updatedAt: new Date(), sceneData: null };
@@ -25,6 +27,7 @@ describe('Scene storage and permissions', () => {
   });
   afterEach(async () => {
     delete process.env.LOCAL_UPLOAD_DIR; delete process.env.LOCAL_MAP_UPLOADS;
+    if (previousEnvironment === undefined) delete process.env.APP_ENV; else process.env.APP_ENV = previousEnvironment;
     if (!path.resolve(folder).startsWith(path.join(tmpdir(), 'tavern-scene-test-'))) throw new Error('Unexpected test folder');
     await rm(folder, { recursive: true, force: true });
   });
@@ -86,6 +89,15 @@ describe('Scene storage and permissions', () => {
   it('keeps editing disabled unless explicitly enabled on the local host', async () => {
     process.env.LOCAL_MAP_UPLOADS = 'false';
     await expect(controller.edit('ABC123', req, emptyScene(), '0')).rejects.toThrow('habilitado');
+  });
+  it('enables hosted beta editing without a local upload flag or persistent map directory', async () => {
+    process.env.APP_ENV = 'beta';
+    process.env.LOCAL_MAP_UPLOADS = 'false';
+    const response = { setHeader: jest.fn() } as any;
+    expect((await controller.get('ABC123', req, response)).editingEnabled).toBe(true);
+    await controller.upload('ABC123', req, { buffer: await png() }, '0');
+    expect(room.mapUrl).toMatch(/^db-webp:/);
+    expect(await readdir(folder)).toHaveLength(0);
   });
   it('rejects oversized scene geometry, invalid numbers and duplicate segments', () => {
     expect(() => validateSceneEdit({ ...emptyScene(), walls: new Array(201).fill({}) })).toThrow();

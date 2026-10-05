@@ -24,14 +24,40 @@ describe('Account authentication', () => {
     await expect(controller.googleLogin({ email: 'owner@example.test', providerAccountId: 'google-sub' }, 'wrong')).rejects.toThrow('Não autorizado');
     expect(prisma.account.findUnique).not.toHaveBeenCalled();
   });
-  it('does not automatically link Google to an existing password account', async () => {
-    prisma.user.findUnique.mockResolvedValue({ id: 'owner', passwordHash: 'existing-hash' });
-    await expect(controller.googleLogin({ email: 'owner@example.test', providerAccountId: 'google-sub' }, 'test-internal-secret')).rejects.toThrow('Vinculação Google');
-    expect(sessions.create).not.toHaveBeenCalled();
+  it('requires a verified Google email before looking up or linking an account', async () => {
+    await expect(controller.googleLogin({ email: 'owner@example.test', providerAccountId: 'google-sub' }, 'test-internal-secret')).rejects.toThrow('não verificado');
+    expect(prisma.account.findUnique).not.toHaveBeenCalled();
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+  });
+  it('links a verified Google identity to the existing password account by normalized email', async () => {
+    prisma.user.findFirst.mockResolvedValue({ id: 'owner', email: 'Owner@Example.Test', passwordHash: 'existing-hash' });
+    await expect(controller.googleLogin({ email: ' OWNER@example.test ', providerAccountId: 'google-sub', emailVerified: true }, 'test-internal-secret')).resolves.toMatchObject({ user: { id: 'owner' } });
+    expect(prisma.user.findFirst).toHaveBeenCalledWith({ where: { email: { equals: 'owner@example.test', mode: 'insensitive' } }, include: { subscription: true } });
+    expect(prisma.account.create).toHaveBeenCalledWith({ data: { userId: 'owner', type: 'oauth', provider: 'google', providerAccountId: 'google-sub' } });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    expect(sessions.create).toHaveBeenCalledWith('owner');
+  });
+  it('creates one user and Google identity for a new verified email', async () => {
+    prisma.user.findFirst.mockResolvedValue(null);
+    prisma.user.create.mockResolvedValue({ id: 'new-user', email: 'new@example.test' });
+    await expect(controller.googleLogin({ email: ' NEW@Example.Test ', providerAccountId: 'google-new', emailVerified: true }, 'test-internal-secret')).resolves.toMatchObject({ user: { id: 'new-user' } });
+    expect(prisma.user.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      email: 'new@example.test', accounts: { create: { type: 'oauth', provider: 'google', providerAccountId: 'google-new' } },
+    }) }));
+    expect(prisma.account.create).not.toHaveBeenCalled();
   });
   it('uses the persisted provider identity for an already-linked Google account', async () => {
-    prisma.account.findUnique.mockResolvedValue({ user: { id: 'linked-user', email: 'original@example.test' } });
-    await expect(controller.googleLogin({ email: 'changed@example.test', providerAccountId: 'google-sub' }, 'test-internal-secret')).resolves.toMatchObject({ user: { id: 'linked-user' } });
-    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    prisma.account.findUnique.mockResolvedValue({ userId: 'linked-user', user: { id: 'linked-user', email: 'original@example.test' } });
+    prisma.user.findFirst.mockResolvedValue(null);
+    await expect(controller.googleLogin({ email: 'changed@example.test', providerAccountId: 'google-sub', emailVerified: true }, 'test-internal-secret')).resolves.toMatchObject({ user: { id: 'linked-user' } });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    expect(prisma.account.create).not.toHaveBeenCalled();
+  });
+  it('does not move an existing Google identity to a different local account', async () => {
+    prisma.account.findUnique.mockResolvedValue({ userId: 'linked-user', user: { id: 'linked-user', email: 'original@example.test' } });
+    prisma.user.findFirst.mockResolvedValue({ id: 'other-user', email: 'other@example.test' });
+    await expect(controller.googleLogin({ email: 'other@example.test', providerAccountId: 'google-sub', emailVerified: true }, 'test-internal-secret')).rejects.toThrow('outra conta');
+    expect(prisma.account.create).not.toHaveBeenCalled();
+    expect(sessions.create).not.toHaveBeenCalled();
   });
 });

@@ -11,12 +11,13 @@ import { RoomAccessService } from './room-access.service';
 import { GameGateway } from './game.gateway';
 import { publicScene, readScene, validateSceneEdit } from './scene.util';
 import type { SceneData } from './scene.util';
+import { appEnvironment } from '../safety/test-policy';
 
 @Controller('rooms/:roomId/scene')
 export class SceneController {
   private folder = path.resolve(process.env.LOCAL_UPLOAD_DIR || 'local-uploads/maps');
   constructor(private prisma: PrismaService, private sessions: SessionService, private access: RoomAccessService, private gateway: GameGateway) {}
-  private enabled() { return process.env.LOCAL_MAP_UPLOADS === 'true'; }
+  private enabled() { return appEnvironment() === 'beta' || process.env.LOCAL_MAP_UPLOADS === 'true'; }
   private async authorize(id: string, req: Request, edit = false) {
     const user = await this.sessions.require(req.headers.cookie);
     if (edit && !this.enabled()) throw new ForbiddenException('O editor de mapas não está habilitado nesta hospedagem.');
