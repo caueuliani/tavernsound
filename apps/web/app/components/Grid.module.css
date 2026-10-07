@@ -1,0 +1,76 @@
+.layout {
+  width: min(100%, 75vh, 900px);
+  margin-inline: auto;
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+  color: #f4e4bc;
+}
+
+.tableSection { min-width: 0; }
+.tableSection > p:first-child { margin-top: 0; }
+.table {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+}
+.canvasHost {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 4px solid #3d2b1f;
+  border-radius: 4px;
+}
+.canvasHost canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  touch-action: none;
+}
+.wallOverlay {
+  position: absolute;
+  inset: 4px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  pointer-events: none;
+}
+.secondary { min-width: 0; }
+.secondary[data-open="false"] .tabs,
+.secondary[data-open="false"] .panels { display: none; }
+.panelToggle {
+  min-height: 40px;
+  margin-bottom: .75rem;
+  padding: .35rem .75rem;
+  color: #ffc568;
+  background: #261a12;
+  border: 1px solid #74522a;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.panel { min-width: 0; height: 300px; }
+.chatPanel { overflow: hidden; }
+.dicePanel { overflow-y: auto; overscroll-behavior: contain; }
+.tabs { display: none; }
+
+@media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+  .layout { width: min(100%, 90vh); }
+  .tabs { display: flex; gap: .5rem; margin-bottom: .75rem; }
+  .tabs button {
+    flex: 1;
+    min-height: 44px;
+    color: #f4e4bc;
+    background: #261a12;
+    border: 1px solid #74522a;
+    border-radius: 8px;
+  }
+  .tabs button[aria-selected="true"] { color: #1a0f0a; background: #ff9d00; }
+  .panels { display: block; }
+  .panel { display: none; }
+  .panel[data-active="true"] { display: block; }
+}

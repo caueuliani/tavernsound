@@ -17,7 +17,7 @@ interface ChatBoxProps {
 export default function ChatBox({ socket, myPlayerName, initialMessages = [] }: ChatBoxProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages)
   const [input, setInput] = useState('')
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const messageListRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (initialMessages.length > 0) {
@@ -37,7 +37,7 @@ export default function ChatBox({ socket, myPlayerName, initialMessages = [] }: 
   }, [socket])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (messageListRef.current) messageListRef.current.scrollTop = messageListRef.current.scrollHeight
   }, [messages])
 
   const sendMessage = () => {
@@ -63,18 +63,20 @@ export default function ChatBox({ socket, myPlayerName, initialMessages = [] }: 
     <div style={{
       background: 'rgba(26, 15, 10, 0.6)',
       borderRadius: '12px',
-      marginTop: '1rem',
+      marginTop: 0,
       border: '1px solid #3d2b1f',
       display: 'flex',
       flexDirection: 'column',
-      height: '220px',
+      height: '100%',
+      boxSizing: 'border-box',
     }}>
       <h3 style={{ margin: '0', padding: '0.75rem 1rem 0.5rem', color: '#ff9d00', fontSize: '1rem', letterSpacing: '0.05em', borderBottom: '1px solid #3d2b1f' }}>
         💬 CHAT
       </h3>
 
-      <div style={{
+      <div ref={messageListRef} style={{
         flex: 1,
+        minHeight: 0,
         overflowY: 'auto',
         padding: '0.5rem 1rem',
         display: 'flex',
@@ -102,7 +104,6 @@ export default function ChatBox({ socket, myPlayerName, initialMessages = [] }: 
             </div>
           )
         })}
-        <div ref={bottomRef} />
       </div>
 
       <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem', borderTop: '1px solid #3d2b1f' }}>
@@ -115,6 +116,7 @@ export default function ChatBox({ socket, myPlayerName, initialMessages = [] }: 
           placeholder="Mensagem..."
           style={{
             flex: 1,
+            minWidth: 0,
             padding: '0.4rem 0.6rem',
             background: '#1a0f0a',
             border: '1px solid #3d2b1f',

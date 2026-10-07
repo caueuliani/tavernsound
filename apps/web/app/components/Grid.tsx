@@ -11,6 +11,7 @@ import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
 import { apiUrl, socketUrl } from '../lib/api-url'
 import { openingBounds, pointOnWall, solidSegments } from '../lib/scene-geometry'
+import styles from './Grid.module.css'
 
 const GRID_SIZE = 500
 const CELL_SIZE = 50
@@ -92,6 +93,8 @@ export default function Grid({ roomId }: GridProps) {
   const isHostRef = useRef(false)
 
   const [chatHistory, setChatHistory] = useState<any[]>([])
+  const [panelsOpen, setPanelsOpen] = useState(true)
+  const [mobileTab, setMobileTab] = useState<'chat' | 'dice'>('chat')
 
   const [tokenEditor, setTokenEditor] = useState<TokenEditorState | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -692,19 +695,17 @@ export default function Grid({ roomId }: GridProps) {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', color: '#f4e4bc' }}>
-      {/* Coluna do canvas */}
-      <div style={{ position: 'relative' }}>
+    <div className={styles.layout}>
+      <div className={styles.tableSection}>
         {roomError && <p role="alert" style={{ color: '#ffb4ab' }}>{roomError}</p>}
         <p><a href={`/room/${roomId}/scene`} style={{ color: '#ffc568' }}>Preparar cenário sem entrar no áudio →</a></p>
-        {isHost && connected && <RoomMembers roomId={roomId} />}
-        <div style={{ position: 'relative', width: 508, height: 508 }}>
+        <div className={styles.table}>
           <div
             ref={canvasRef}
             onContextMenu={e => e.preventDefault()}
-            style={{ border: '4px solid #3d2b1f', borderRadius: '4px', display: 'inline-block' }}
+            className={styles.canvasHost}
           />
-          <svg aria-label="Paredes e portas do cenário" viewBox="0 0 500 500" style={{ position: 'absolute', inset: 4, width: 500, height: 500, pointerEvents: 'none' }}>
+          <svg aria-label="Paredes e portas do cenário" viewBox="0 0 500 500" className={styles.wallOverlay}>
             {scene?.walls.map(wall => <g key={wall.id}>
               {solidSegments(wall).map((segment, index) => <g key={index}>
                 <line x1={segment.x1 * 50} y1={segment.y1 * 50} x2={segment.x2 * 50} y2={segment.y2 * 50} stroke="#120d09" strokeWidth="7" opacity=".8" />
@@ -718,6 +719,7 @@ export default function Grid({ roomId }: GridProps) {
             </g>)}
           </svg>
         </div>
+        {isHost && connected && <RoomMembers roomId={roomId} />}
 
         {/* Painel editor de token (HP + imagem) */}
         {tokenEditor && (
@@ -833,12 +835,24 @@ export default function Grid({ roomId }: GridProps) {
         </div>
       </div>
 
-      {/* Painel lateral */}
-      <div style={{ flex: 1, minWidth: '300px', maxWidth: '400px' }}>
-        <DiceRoller onRoll={handleRollDice} playerName={playerName} />
-        <DiceHistory rolls={diceRolls} myPlayerId={playerId} />
-        <ChatBox socket={socketRef.current} myPlayerName={playerName} initialMessages={chatHistory} />
-      </div>
+      <section className={styles.secondary} data-open={panelsOpen} aria-label="Chat e dados">
+        <button className={styles.panelToggle} onClick={() => setPanelsOpen(value => !value)} aria-expanded={panelsOpen}>
+          {panelsOpen ? 'Ocultar chat e dados' : 'Mostrar chat e dados'}
+        </button>
+        <div className={styles.tabs} role="tablist" aria-label="Painéis da sala">
+          <button role="tab" aria-selected={mobileTab === 'chat'} onClick={() => setMobileTab('chat')}>Chat</button>
+          <button role="tab" aria-selected={mobileTab === 'dice'} onClick={() => setMobileTab('dice')}>Dados</button>
+        </div>
+        <div className={styles.panels}>
+          <div className={`${styles.panel} ${styles.chatPanel}`} data-active={mobileTab === 'chat'}>
+            <ChatBox socket={socketRef.current} myPlayerName={playerName} initialMessages={chatHistory} />
+          </div>
+          <div className={`${styles.panel} ${styles.dicePanel}`} data-active={mobileTab === 'dice'}>
+            <DiceRoller onRoll={handleRollDice} playerName={playerName} />
+            <DiceHistory rolls={diceRolls} myPlayerId={playerId} />
+          </div>
+        </div>
+      </section>
     </div>
   )
 }
