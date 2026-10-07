@@ -117,11 +117,12 @@ describe('Socket and HTTP authentication integration (in-memory database double)
       delete process.env.TEST_ALLOWED_EMAILS;
       jest.restoreAllMocks();
     });
-    it('rejects registration and existing sessions outside the allowlist', async () => {
-      await request(app.getHttpServer()).post('/auth/register').send({ email: 'outsider@example.test', password: 'long-password' }).expect(403);
+    it('accepts existing sessions outside the legacy allowlist but keeps rooms private', async () => {
       const cookie = `user-session=${await sessions.create('outsider')}`;
-      await request(app.getHttpServer()).get('/auth/me').set('Cookie', cookie).expect(403);
-      const socket = client(cookie); const denied = event(socket, 'connect_error'); socket.connect(); await denied;
+      await request(app.getHttpServer()).get('/auth/me').set('Cookie', cookie).expect(200);
+      const socket = client(cookie); await connect(socket);
+      const denied = event(socket, 'room-error'); socket.emit('join-room', { roomId: 'ABC123' });
+      expect((await denied).message).toContain('não autorizada');
     });
     it('denies voice without a live test-room connection and disables checkout', async () => {
       const cookie = `user-session=${await sessions.create('owner')}`;

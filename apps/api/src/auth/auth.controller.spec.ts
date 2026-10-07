@@ -6,13 +6,34 @@ describe('Account authentication', () => {
   let sessions: any;
   let controller: AuthController;
   const previousInternal = process.env.INTERNAL_API_SECRET;
+  const previousEnvironment = process.env.APP_ENV;
+  const previousEmails = process.env.TEST_ALLOWED_EMAILS;
   beforeEach(() => {
     prisma = { user: { findFirst: jest.fn(), findUnique: jest.fn(), create: jest.fn() }, account: { findUnique: jest.fn().mockResolvedValue(null), create: jest.fn() } };
     sessions = { create: jest.fn().mockResolvedValue('persisted-session') };
     controller = new AuthController(prisma, sessions);
     process.env.INTERNAL_API_SECRET = 'test-internal-secret';
   });
-  afterAll(() => { if (previousInternal === undefined) delete process.env.INTERNAL_API_SECRET; else process.env.INTERNAL_API_SECRET = previousInternal; });
+  afterAll(() => {
+    if (previousInternal === undefined) delete process.env.INTERNAL_API_SECRET; else process.env.INTERNAL_API_SECRET = previousInternal;
+    if (previousEnvironment === undefined) delete process.env.APP_ENV; else process.env.APP_ENV = previousEnvironment;
+    if (previousEmails === undefined) delete process.env.TEST_ALLOWED_EMAILS; else process.env.TEST_ALLOWED_EMAILS = previousEmails;
+  });
+
+  it('permits beta registration, password login and verified Google login outside the legacy allowlist', async () => {
+    process.env.APP_ENV = 'beta';
+    process.env.TEST_ALLOWED_EMAILS = 'owner@example.test';
+    prisma.user.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: 'new-user', email: 'new@example.test', passwordHash: await bcrypt.hash('valid-password', 4),
+    }).mockResolvedValueOnce(null);
+    prisma.user.create.mockResolvedValueOnce({ id: 'new-user', email: 'new@example.test' })
+      .mockResolvedValueOnce({ id: 'google-user', email: 'google@example.test' });
+
+    await expect(controller.register({ email: 'new@example.test', password: 'valid-password' })).resolves.toMatchObject({ success: true });
+    await expect(controller.login({ email: 'new@example.test', password: 'valid-password' })).resolves.toMatchObject({ sessionToken: 'persisted-session' });
+    await expect(controller.googleLogin({ email: 'google@example.test', providerAccountId: 'google-new', emailVerified: true }, 'test-internal-secret'))
+      .resolves.toMatchObject({ user: { id: 'google-user' } });
+  });
 
   it('issues a persisted session only after verifying the password', async () => {
     prisma.user.findFirst.mockResolvedValue({ id: 'owner', email: 'owner@example.test', passwordHash: await bcrypt.hash('valid-password', 4) });

@@ -1,5 +1,3 @@
-import { ForbiddenException } from '@nestjs/common';
-
 export type AppEnvironment = 'development' | 'beta' | 'production';
 
 // APP_ENV describes product rules; NODE_ENV only controls the runtime build.
@@ -24,12 +22,9 @@ export function testMode(): boolean {
   return appEnvironment() === 'beta';
 }
 
-export function requireTester(email: unknown): void {
-  if (!testMode()) return;
-  const allowed = (process.env.TEST_ALLOWED_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-  if (typeof email !== 'string' || !allowed.includes(email.trim().toLowerCase())) {
-    throw new ForbiddenException('Beta fechada: esta conta não está autorizada para testes.');
-  }
+export function requireTester(_email: unknown): void {
+  // Keep existing auth/session call sites and environment validation; beta access is public.
+  appEnvironment();
 }
 
 export const TEST_LIMITS = Object.freeze({

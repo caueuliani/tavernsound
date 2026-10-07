@@ -2,7 +2,7 @@ import { TestSafetyService } from './test-safety.service';
 import { appEnvironment, requireTester, TEST_LIMITS, testMode } from './test-policy';
 import { budgetDatabase } from './test-database.double';
 
-describe('Closed beta limits (transaction double)', () => {
+describe('Beta limits (transaction double)', () => {
   let db: ReturnType<typeof budgetDatabase>;
   let safety: TestSafetyService;
   let now: number;
@@ -26,13 +26,15 @@ describe('Closed beta limits (transaction double)', () => {
     if (previousEmails === undefined) delete process.env.TEST_ALLOWED_EMAILS; else process.env.TEST_ALLOWED_EMAILS = previousEmails;
   });
 
-  it('defaults closed, rejects an empty allowlist, normalizes authorized email', () => {
+  it('defaults to beta, permits any email with or without the legacy allowlist, and validates the environment', () => {
     delete process.env.APP_ENV;
     delete process.env.TEST_MODE;
     expect(testMode()).toBe(true);
-    expect(() => requireTester(' OWNER@example.test ')).not.toThrow();
+    expect(() => requireTester('outsider@example.test')).not.toThrow();
     process.env.TEST_ALLOWED_EMAILS = '';
-    expect(() => requireTester('owner@example.test')).toThrow('Beta fechada');
+    expect(() => requireTester('outsider@example.test')).not.toThrow();
+    delete process.env.TEST_ALLOWED_EMAILS;
+    expect(() => requireTester('outsider@example.test')).not.toThrow();
     process.env.TEST_MODE = 'tru';
     expect(() => testMode()).toThrow('TEST_MODE');
     process.env.TEST_MODE = 'false';
@@ -49,7 +51,7 @@ describe('Closed beta limits (transaction double)', () => {
 
     process.env.APP_ENV = 'beta';
     expect(testMode()).toBe(true);
-    expect(() => requireTester('any@example.test')).toThrow('Beta fechada');
+    expect(() => requireTester('any@example.test')).not.toThrow();
 
     process.env.APP_ENV = 'production';
     expect(testMode()).toBe(false);
