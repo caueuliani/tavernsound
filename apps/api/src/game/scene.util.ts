@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 
-export interface SceneWall { id: string; x1: number; y1: number; x2: number; y2: number; isDoor: boolean; isOpen: boolean; blocksAudio: boolean }
+export interface SceneOpening { id: string; type: 'door' | 'window'; position: number; width: number; isOpen: boolean }
+export interface SceneWall { id: string; x1: number; y1: number; x2: number; y2: number; isDoor: boolean; isOpen: boolean; blocksAudio: boolean; openings?: SceneOpening[] }
 export interface SceneData {
   revision: number;
   map: { file: string; width: number; height: number } | null;
@@ -21,7 +22,20 @@ export function validateSceneEdit(value: any): Pick<SceneData, 'settings' | 'wal
       Math.hypot(w.x2 - w.x1, w.y2 - w.y1) < 0.05 ||
       typeof w.isDoor !== 'boolean' || typeof w.isOpen !== 'boolean' || typeof w.blocksAudio !== 'boolean') throw new BadRequestException('Parede ou porta inválida.');
     ids.add(w.id);
-    return { id: w.id, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, isDoor: w.isDoor, isOpen: w.isDoor && w.isOpen, blocksAudio: w.blocksAudio };
+    if (w.openings !== undefined && (!Array.isArray(w.openings) || w.openings.length > 20 || w.isDoor)) throw new BadRequestException('Aberturas inválidas.');
+    const openings: SceneOpening[] = (w.openings || []).map((opening: any) => {
+      if (!opening || typeof opening.id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(opening.id) ||
+        !['door', 'window'].includes(opening.type) || !number(opening.position, 0, 1) || !number(opening.width, .04, 1) ||
+        typeof opening.isOpen !== 'boolean') throw new BadRequestException('Abertura inválida.');
+      return { id: opening.id, type: opening.type, position: opening.position, width: opening.width, isOpen: opening.type === 'door' && opening.isOpen };
+    });
+    const sorted = [...openings].sort((a, b) => a.position - a.width / 2 - (b.position - b.width / 2));
+    if (new Set(openings.map(opening => opening.id)).size !== openings.length || sorted.some((opening, index) =>
+      opening.position - opening.width / 2 < 0 || opening.position + opening.width / 2 > 1 ||
+      (index > 0 && opening.position - opening.width / 2 < sorted[index - 1].position + sorted[index - 1].width / 2 + .01))) {
+      throw new BadRequestException('Aberturas sobrepostas ou fora da parede.');
+    }
+    return { id: w.id, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, isDoor: w.isDoor, isOpen: w.isDoor && w.isOpen, blocksAudio: w.blocksAudio, ...(w.openings === undefined ? {} : { openings }) };
   });
   return { settings: { scale: s.scale, x: s.x, y: s.y, gridOpacity: s.gridOpacity }, walls };
 }

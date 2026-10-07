@@ -5,6 +5,7 @@ import { useVoiceDetection } from './useVoiceDetection'
 import { apiUrl } from '../lib/api-url'
 import { installAgoraCompatibility } from '../lib/agora-compat'
 import { remoteVoiceMode, type VoiceRole } from './voice-mode'
+import { wallOcclusionCount, type WallGeometry } from '../lib/scene-geometry'
 
 interface Token {
   id: string
@@ -13,16 +14,7 @@ interface Token {
   playerId: string
 }
 
-interface WallData {
-  id: string
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-  isDoor?: boolean
-  isOpen?: boolean
-  blocksAudio?: boolean
-}
+interface WallData extends WallGeometry { id: string }
 
 interface SpatialAudioConfig {
   onLocalSpeakingChange?: (speaking: boolean) => void
@@ -98,42 +90,9 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
     return Math.sqrt(dx * dx + dy * dy)
   }
 
-  // Algoritmo para verificar interseção entre dois segmentos de reta (Linha de Som vs Parede)
-  const checkLineIntersection = (
-    p0_x: number, p0_y: number, p1_x: number, p1_y: number,
-    p2_x: number, p2_y: number, p3_x: number, p3_y: number
-  ): boolean => {
-    const s1_x = p1_x - p0_x
-    const s1_y = p1_y - p0_y
-    const s2_x = p3_x - p2_x
-    const s2_y = p3_y - p2_y
-
-    const s = (-s1_y * (p0_x - p2_x) + s1_x * (p0_y - p2_y)) / (-s2_x * s1_y + s1_x * s2_y)
-    const t = (s2_x * (p0_y - p2_y) - s2_y * (p0_x - p2_x)) / (-s2_x * s1_y + s1_x * s2_y)
-
-    return s >= 0 && s <= 1 && t >= 0 && t <= 1
-  }
-
   // Verifica se há paredes/portas fechadas bloqueando o caminho do som
   const calculateWallOcclusion = (listenerToken: Token, emitterToken: Token): { isOccluded: boolean; occlusionCount: number } => {
-    let occlusionCount = 0
-    const currentWalls = wallsRef.current || []
-
-    for (const wall of currentWalls) {
-      if (wall.blocksAudio === false) continue
-      if (wall.isDoor && wall.isOpen) continue
-
-      const intersects = checkLineIntersection(
-        listenerToken.x, listenerToken.y,
-        emitterToken.x, emitterToken.y,
-        wall.x1, wall.y1,
-        wall.x2, wall.y2
-      )
-
-      if (intersects) {
-        occlusionCount++
-      }
-    }
+    const occlusionCount = wallOcclusionCount({ x1: listenerToken.x, y1: listenerToken.y, x2: emitterToken.x, y2: emitterToken.y }, wallsRef.current || [])
 
     return {
       isOccluded: occlusionCount > 0,

@@ -86,6 +86,21 @@ describe('Scene storage and permissions', () => {
     const response = { setHeader: jest.fn() } as any;
     expect((await controller.get('ABC123', req, response)).scene).toEqual(result);
   });
+  it('persists wall openings while keeping an older wall without openings readable', async () => {
+    const oldWall = { id: 'old', x1: 0, y1: 0, x2: 5, y2: 0, isDoor: true, isOpen: true, blocksAudio: true };
+    const newWall = { id: 'new', x1: 0, y1: 1, x2: 10, y2: 1, isDoor: false, isOpen: false, blocksAudio: true,
+      openings: [{ id: 'door', type: 'door', position: .5, width: .2, isOpen: false }] };
+    const result = await controller.edit('ABC123', req, { settings: emptyScene().settings, walls: [oldWall, newWall] }, '0');
+    expect(result.walls[0]).not.toHaveProperty('openings');
+    expect(result.walls[1].openings).toEqual(newWall.openings);
+    expect(room.sceneData.walls).toEqual(result.walls);
+  });
+  it('rejects openings outside wall bounds or overlapping another opening', () => {
+    const wall = { id: 'wall', x1: 0, y1: 0, x2: 10, y2: 0, isDoor: false, isOpen: false, blocksAudio: true };
+    const opening = { id: 'one', type: 'door', position: .5, width: .2, isOpen: false };
+    expect(() => validateSceneEdit({ ...emptyScene(), walls: [{ ...wall, openings: [{ ...opening, position: .05 }] }] })).toThrow('Aberturas');
+    expect(() => validateSceneEdit({ ...emptyScene(), walls: [{ ...wall, openings: [opening, { ...opening, id: 'two', position: .55 }] }] })).toThrow('Aberturas');
+  });
   it('keeps editing disabled unless explicitly enabled on the local host', async () => {
     process.env.LOCAL_MAP_UPLOADS = 'false';
     await expect(controller.edit('ABC123', req, emptyScene(), '0')).rejects.toThrow('habilitado');

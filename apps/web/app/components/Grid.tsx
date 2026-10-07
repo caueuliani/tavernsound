@@ -10,6 +10,7 @@ import type { Scene } from './SceneEditor'
 import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
 import { apiUrl, socketUrl } from '../lib/api-url'
+import { openingBounds, pointOnWall, solidSegments } from '../lib/scene-geometry'
 
 const GRID_SIZE = 500
 const CELL_SIZE = 50
@@ -705,9 +706,15 @@ export default function Grid({ roomId }: GridProps) {
           />
           <svg aria-label="Paredes e portas do cenário" viewBox="0 0 500 500" style={{ position: 'absolute', inset: 4, width: 500, height: 500, pointerEvents: 'none' }}>
             {scene?.walls.map(wall => <g key={wall.id}>
-              <line x1={wall.x1 * 50} y1={wall.y1 * 50} x2={wall.x2 * 50} y2={wall.y2 * 50} stroke="#120d09" strokeWidth="7" opacity=".8" />
-              <line x1={wall.x1 * 50} y1={wall.y1 * 50} x2={wall.x2 * 50} y2={wall.y2 * 50} stroke={wall.isDoor ? wall.isOpen ? '#64d7a2' : '#ffbf62' : '#a3b4ca'} strokeWidth="3" strokeDasharray={wall.isOpen ? '7 7' : undefined} />
+              {solidSegments(wall).map((segment, index) => <g key={index}>
+                <line x1={segment.x1 * 50} y1={segment.y1 * 50} x2={segment.x2 * 50} y2={segment.y2 * 50} stroke="#120d09" strokeWidth="7" opacity=".8" />
+                <line x1={segment.x1 * 50} y1={segment.y1 * 50} x2={segment.x2 * 50} y2={segment.y2 * 50} stroke={wall.isDoor ? wall.isOpen ? '#64d7a2' : '#ffbf62' : '#a3b4ca'} strokeWidth="3" strokeDasharray={wall.isOpen ? '7 7' : undefined} />
+              </g>)}
               {wall.isDoor && <text x={(wall.x1 + wall.x2) * 25 + 5} y={(wall.y1 + wall.y2) * 25 - 5} fill={wall.isOpen ? '#64d7a2' : '#ffbf62'} fontSize="11" stroke="#120d09" strokeWidth="3" paintOrder="stroke">{wall.isOpen ? 'Aberta' : 'Porta'}</text>}
+              {wall.openings?.map(item => {
+                const [left, right] = openingBounds(item), a = pointOnWall(wall, left), b = pointOnWall(wall, right)
+                return <line key={item.id} x1={a.x * 50} y1={a.y * 50} x2={b.x * 50} y2={b.y * 50} stroke={item.type === 'window' ? '#8fd3ff' : item.isOpen ? '#64d7a2' : '#ffbf62'} strokeWidth="4" strokeDasharray={item.isOpen ? '7 7' : undefined} />
+              })}
             </g>)}
           </svg>
         </div>
