@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { Suspense, useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+import { apiUrl } from '../lib/api-url'
 
 interface Plan {
   tier: 'FREE' | 'BASIC' | 'PRO' | 'ENTERPRISE'
@@ -66,6 +66,10 @@ const PLANS: Plan[] = [
 ]
 
 export default function PricingPage() {
+  return <Suspense fallback={<p role="status">Carregando planos…</p>}><PricingContent /></Suspense>
+}
+
+function PricingContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [loading, setLoading] = useState<string | null>(null)
@@ -76,7 +80,7 @@ export default function PricingPage() {
   const canceled = searchParams.get('canceled')
 
   useEffect(() => {
-    fetch(`${API_URL}/subscriptions/me`, { credentials: 'include' })
+    fetch(apiUrl('/subscriptions/me'), { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.tier) setUserTier(data.tier) })
       .catch(() => {})
@@ -94,7 +98,7 @@ export default function PricingPage() {
     setError(null)
 
     try {
-      const res = await fetch(`${API_URL}/subscriptions/checkout`, {
+      const res = await fetch(apiUrl('/subscriptions/checkout'), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

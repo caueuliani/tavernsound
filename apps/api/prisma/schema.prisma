@@ -7,6 +7,18 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// Global beta budget. Never delete/reset this row during deployment.
+model TestBudget {
+  id              String   @id
+  day             String
+  operations      Int      @default(0)
+  reservedMinutes Int      @default(0)
+  roomId          String?
+  endsAt          DateTime?
+  participants    Json     @default("[]")
 }
 
 // ====================================
@@ -31,6 +43,8 @@ model User {
   ownedRooms    Room[]    @relation("RoomOwner")
   roomMembers   RoomMember[]
   diceRolls     DiceRoll[]
+  ownedCampaigns Campaign[] @relation("CampaignOwner")
+  campaignMemberships CampaignMember[] @relation("CampaignMembership")
   
   @@index([email])
 }
@@ -167,7 +181,11 @@ model Room {
   ownerId     String?
   owner       User?    @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   
+  campaignId  String?
+  campaign    Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  
   mapUrl      String?
+  sceneData   Json?
   gridSize    Int      @default(50)
   mapWidth    Int      @default(20)
   mapHeight   Int      @default(20)
@@ -184,9 +202,87 @@ model Room {
   tokens      Token[]
   members     RoomMember[]
   diceRolls   DiceRoll[]
+  sessions    GameSession[]
   
   @@index([ownerId])
   @@index([lastActiveAt])
+  @@index([campaignId])
+}
+
+// ====================================
+// 📜 CAMPANHAS
+// ====================================
+
+enum CampaignStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+model Campaign {
+  id            String         @id @default(cuid())
+  name          String
+  description   String?
+  status        CampaignStatus @default(ACTIVE)
+  
+  ownerId       String
+  owner         User           @relation("CampaignOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  
+  inviteCode    String?        @unique
+  inviteExpiry  DateTime?
+  
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  
+  rooms         Room[]
+  members       CampaignMember[]
+  sessions      GameSession[]
+  
+  @@index([ownerId])
+  @@index([inviteCode])
+}
+
+model CampaignMember {
+  id          String   @id @default(cuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  
+  userId      String
+  user        User     @relation("CampaignMembership", fields: [userId], references: [id], onDelete: Cascade)
+  
+  role        String   @default("PLAYER")
+  joinedAt    DateTime @default(now())
+  
+  @@unique([campaignId, userId])
+  @@index([campaignId])
+  @@index([userId])
+}
+
+// ====================================
+// 🎮 SESSÕES DE JOGO
+// ====================================
+
+model GameSession {
+  id          String   @id @default(cuid())
+  roomId      String
+  room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  campaignId  String?
+  campaign    Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  
+  name        String?
+  description String?
+  notes       String?
+  
+  startedAt   DateTime @default(now())
+  endedAt     DateTime?
+  
+  participantCount Int  @default(0)
+  
+  @@index([roomId])
+  @@index([campaignId])
+  @@index([startedAt])
 }
 
 model RoomMember {

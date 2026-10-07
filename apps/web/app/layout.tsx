@@ -1,8 +1,8 @@
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Tavern Sound',
-  description: 'Virtual Tabletop with Spatial Audio',
+  title: 'TavernSound — Uma mesa. Mil histórias.',
+  description: 'Reúna seu grupo em um tabletop virtual com mapas, personagens e áudio espacial. Sua próxima aventura começa no TavernSound.',
 }
 
 export default function RootLayout({

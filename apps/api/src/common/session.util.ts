@@ -1,23 +1,47 @@
-import * as crypto from 'crypto'
+import { createHmac, timingSafeEqual } from 'crypto';
 
-function secret(): string {
-  return process.env.SESSION_SECRET || ''
+export interface SessionClaims {
+  id: string;
+  sid: string;
+  iat: number;
+  exp: number;
 }
 
-/** Verifica assinatura HMAC-SHA256 e retorna o payload, ou null se inválido */
-export function verifySession(token: string): Record<string, unknown> | null {
-  const dot = token.lastIndexOf('.')
-  if (dot === -1) return null
-  const data = token.slice(0, dot)
-  const sig = token.slice(dot + 1)
+function secret(): string {
+  const value = process.env.SESSION_SECRET || process.env.NEXTAUTH_SECRET;
+  if (!value) throw new Error('SESSION_SECRET env var não definida');
+  return value;
+}
+
+export function signSession(claims: SessionClaims): string {
+  const data = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  return `${data}.${createHmac('sha256', secret()).update(data).digest('base64url')}`;
+}
+
+export function verifySession(token: string): SessionClaims | null {
+  if (typeof token !== 'string' || token.length > 4096) return null;
+  const [data, signature, extra] = token.split('.');
+  if (!data || !signature || extra !== undefined) return null;
   try {
-    const expected = crypto.createHmac('sha256', secret()).update(data).digest('base64url')
-    const sigBuf = Buffer.from(sig, 'base64url')
-    const expBuf = Buffer.from(expected, 'base64url')
-    if (sigBuf.length !== expBuf.length) return null
-    if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null
-    return JSON.parse(Buffer.from(data, 'base64url').toString('utf8')) as Record<string, unknown>
-  } catch {
-    return null
+    const actual = Buffer.from(signature, 'base64url');
+    const expected = createHmac('sha256', secret()).update(data).digest();
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
+    const claims = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+    const now = Math.floor(Date.now() / 1000);
+    if (!claims || typeof claims.id !== 'string' || !claims.id ||
+        typeof claims.sid !== 'string' || !/^[a-f0-9]{64}$/.test(claims.sid) ||
+        !Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.exp) ||
+        claims.iat > now || claims.exp <= now || claims.exp <= claims.iat) return null;
+    return claims;
+  } catch { return null; }
+}
+
+export function sessionCookie(header?: string): string | null {
+  for (const part of (header || '').split(';')) {
+    const index = part.indexOf('=');
+    if (part.slice(0, index).trim() !== 'user-session') continue;
+    try { return decodeURIComponent(part.slice(index + 1).trim()); }
+    catch { return null; }
   }
+  return null;
 }

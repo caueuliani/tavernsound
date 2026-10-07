@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
+import { trustedMutation } from '@/lib/auth-security'
 
 export async function POST(request: Request) {
+  if (!trustedMutation(request)) return NextResponse.json({ error: 'Origem não autorizada.' }, { status: 403 })
   try {
     const body = await request.json()
 

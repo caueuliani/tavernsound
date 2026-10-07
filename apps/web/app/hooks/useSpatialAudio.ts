@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useVoiceDetection } from './useVoiceDetection'
+import { apiUrl } from '../lib/api-url'
+import { installAgoraCompatibility } from '../lib/agora-compat'
+import { remoteVoiceMode, type VoiceRole } from './voice-mode'
 
 interface Token {
   id: string
@@ -22,7 +25,9 @@ interface WallData {
 }
 
 interface SpatialAudioConfig {
+  onLocalSpeakingChange?: (speaking: boolean) => void
   channelName: string
+  isHost: boolean
   myToken: Token | null
   allTokens: Map<string, Token>
   walls?: WallData[]
@@ -32,6 +37,7 @@ interface SpatialAudioConfig {
 }
 
 interface RemoteAudioNode {
+  spatial: boolean
   pannerNode: PannerNode
   gainNode: GainNode
   filterNode: BiquadFilterNode
@@ -41,6 +47,7 @@ interface RemoteAudioNode {
 export function useSpatialAudio(config: SpatialAudioConfig) {
   const {
     channelName,
+    isHost,
     myToken,
     allTokens,
     walls = [],
@@ -55,16 +62,32 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   const remoteAudioNodesRef = useRef<Map<string, RemoteAudioNode>>(new Map())
 
   const [isConnected, setIsConnected] = useState(false)
+  const [playbackBlocked, setPlaybackBlocked] = useState(false)
+  const enablePlayback = () => {
+    const context = audioContextRef.current
+    if (context && context.state !== 'closed') {
+      void context.resume().catch(() => setPlaybackBlocked(true))
+    }
+  }
+  const [audioError, setAudioError] = useState('')
+  const [audioStatus, setAudioStatus] = useState('Aguardando entrada na sala…')
+  const [attempt, setAttempt] = useState(0)
+  const retryAudio = () => { void audioContextRef.current?.resume().catch(() => {}); setAttempt(value => value + 1) }
   const [isMuted, setIsMuted] = useState(false)
   const [isDeafened, setIsDeafened] = useState(false)
+  const isDeafenedRef = useRef(false)
+  isDeafenedRef.current = isDeafened
   const [remoteUsers, setRemoteUsers] = useState<Set<string>>(new Set())
   const socketToAgoraMapRef = useRef<Map<string, string>>(new Map())
+  const agoraVoiceRolesRef = useRef<Map<string, VoiceRole>>(new Map())
   const myAgoraUidRef = useRef<string>('')
 
   const [localAudioTrack, setLocalAudioTrack] = useState<any>(null)
 
   const myTokenRef = useRef<Token | null>(null)
   myTokenRef.current = myToken
+  const isHostRef = useRef(isHost)
+  isHostRef.current = isHost
 
   const wallsRef = useRef<WallData[]>(walls)
   wallsRef.current = walls
@@ -119,12 +142,13 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   }
 
   const handleSpeakingChange = (isSpeaking: boolean) => {
+    config.onLocalSpeakingChange?.(isSpeaking)
     if (socket) {
       socket.emit('player-speaking', { isSpeaking })
     }
   }
 
-  useVoiceDetection(localAudioTrack, {
+  useVoiceDetection(isConnected && !isMuted ? localAudioTrack : null, {
     onSpeakingChange: handleSpeakingChange,
     threshold: 0.01,
     smoothing: 0.8,
@@ -132,7 +156,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
   const updateSpatialAudio = () => {
     const currentToken = myTokenRef.current
-    if (!currentToken || !audioContextRef.current) return
+    if (!audioContextRef.current) return
 
     const audioContext = audioContextRef.current
 
@@ -140,10 +164,33 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       const socketId = Array.from(socketToAgoraMapRef.current.entries())
         .find(([_, uid]) => uid === agoraUid)?.[0]
 
-      if (!socketId) return
-
-      const remoteToken = allTokens.get(socketId)
-      if (!remoteToken) return
+      const remoteToken = socketId ? allTokens.get(socketId) : undefined
+      const mode = remoteVoiceMode(
+        isHostRef.current,
+        agoraVoiceRolesRef.current.get(agoraUid),
+        Boolean(currentToken),
+        Boolean(remoteToken),
+        isDeafenedRef.current,
+      )
+      if (mode === 'global') {
+        // Global voices bypass both the HRTF panner and the wall filter.
+        if (audioNode.spatial) {
+          audioNode.source.disconnect()
+          audioNode.source.connect(audioNode.gainNode)
+          audioNode.spatial = false
+        }
+        audioNode.gainNode.gain.setValueAtTime(1, audioContext.currentTime)
+        return
+      }
+      if (!audioNode.spatial) {
+        audioNode.source.disconnect()
+        audioNode.source.connect(audioNode.pannerNode)
+        audioNode.spatial = true
+      }
+      if (mode === 'silent' || !currentToken || !remoteToken) {
+        audioNode.gainNode.gain.setValueAtTime(0, audioContext.currentTime)
+        return
+      }
 
       const distance = calculateDistance(currentToken, remoteToken)
 
@@ -157,7 +204,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
       const { isOccluded, occlusionCount } = calculateWallOcclusion(currentToken, remoteToken)
 
-      if (distance > maxDistance || isDeafened) {
+      if (distance > maxDistance) {
         audioNode.gainNode.gain.setValueAtTime(0, audioContext.currentTime)
       } else {
         // Atenuação de ganho e abafamento por paredes
@@ -176,11 +223,24 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
     const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID
     if (!appId) {
+      setAudioError('Áudio não configurado no servidor.')
       console.error('❌ NEXT_PUBLIC_AGORA_APP_ID não encontrado')
       return
     }
 
     let AgoraRTC: any
+    let cancelled = false
+    const resumeController = new AbortController()
+    let watchdog: ReturnType<typeof setTimeout> | undefined
+    const fail = (message: string) => {
+      if (cancelled) return
+      cancelled = true
+      clearTimeout(watchdog)
+      setAudioError(message)
+      setIsConnected(false)
+      localTrackRef.current?.close()
+      void clientRef.current?.leave().catch(() => {})
+    }
 
     const initAgora = async () => {
       try {
@@ -189,7 +249,12 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
           return
         }
 
+        setAudioError('')
+        setAudioStatus('Conectando ao serviço de áudio…')
+        watchdog = setTimeout(() => fail('A conexão de áudio demorou demais. Verifique a permissão do microfone e tente novamente.'), 25000)
+        installAgoraCompatibility()
         AgoraRTC = (await import('agora-rtc-sdk-ng')).default
+        if (cancelled) return
 
         const client = AgoraRTC.createClient({
           mode: 'rtc',
@@ -199,6 +264,15 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         clientRef.current = client
 
         const audioContext = new AudioContext()
+        const syncPlaybackState = () => {
+          if (!cancelled) setPlaybackBlocked(audioContext.state !== 'running')
+        }
+        audioContext.addEventListener('statechange', syncPlaybackState, { signal: resumeController.signal })
+        syncPlaybackState()
+        const resumePlayback = () => { if (audioContext.state !== 'running') void audioContext.resume().catch(() => {}) }
+        window.addEventListener('click', resumePlayback, { signal: resumeController.signal })
+        window.addEventListener('touchend', resumePlayback, { signal: resumeController.signal })
+        window.addEventListener('keydown', resumePlayback, { signal: resumeController.signal })
         audioContextRef.current = audioContext
 
         const listener = audioContext.listener
@@ -224,6 +298,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         client.on('user-published', async (user: any, mediaType: string) => {
           if (mediaType === 'audio') {
             await client.subscribe(user, mediaType)
+            if (cancelled) return
 
             const remoteAudioTrack = user.audioTrack
             if (!remoteAudioTrack || !audioContextRef.current) return
@@ -236,7 +311,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
             const pannerNode = currentAudioContext.createPanner()
             pannerNode.panningModel = 'HRTF'
             pannerNode.distanceModel = 'inverse'
-            pannerNode.refDistance = 100
+            pannerNode.refDistance = 1
             pannerNode.maxDistance = maxDistance
             pannerNode.rolloffFactor = 1
 
@@ -245,7 +320,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
             filterNode.frequency.setValueAtTime(20000, currentAudioContext.currentTime)
 
             const gainNode = currentAudioContext.createGain()
-            gainNode.gain.value = 1
+            gainNode.gain.value = 0
 
             source.connect(pannerNode)
             pannerNode.connect(filterNode)
@@ -253,6 +328,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
             gainNode.connect(currentAudioContext.destination)
 
             remoteAudioNodesRef.current.set(user.uid.toString(), {
+              spatial: true,
               pannerNode,
               filterNode,
               gainNode,
@@ -282,8 +358,12 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         })
 
         if (socket) {
-          socket.on('agora-uid-announced', (data: { socketId: string; agoraUid: string }) => {
+          socket.on('agora-uid-announced', (data: { socketId: string; agoraUid: string; isHost: boolean }) => {
+            for (const [socketId, uid] of socketToAgoraMapRef.current) {
+              if (uid === data.agoraUid && socketId !== data.socketId) socketToAgoraMapRef.current.delete(socketId)
+            }
             socketToAgoraMapRef.current.set(data.socketId, data.agoraUid)
+            agoraVoiceRolesRef.current.set(data.agoraUid, data.isHost === true ? 'host' : 'player')
             updateSpatialAudio()
           })
 
@@ -300,39 +380,38 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
           })
         }
 
-        let token = null
-        let retries = 3
-        while (retries > 0 && !token) {
+        const fetchVoiceToken = async () => {
+          const response = await fetch(apiUrl(`/agora/token?channelName=${encodeURIComponent(channelName)}`), {
+            credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(10000),
+          })
+          const result = await response.json()
+          if (!response.ok || typeof result.token !== 'string' || typeof result.uid !== 'string') {
+            throw new Error(typeof result.message === 'string' ? result.message : 'Não foi possível autorizar a voz nesta sala.')
+          }
+          return result as { token: string; uid: string }
+        }
+        setAudioStatus('Aguardando permissão do microfone…')
+        const localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+          encoderConfig: 'music_standard',
+        })
+        if (cancelled) { localAudioTrack.close(); await client.leave(); return }
+        localTrackRef.current = localAudioTrack
+        setLocalAudioTrack(localAudioTrack)
+
+        const authorization = await fetchVoiceToken()
+        if (cancelled) return
+        const uid = await client.join(appId, channelName, authorization.token, authorization.uid)
+        if (cancelled) { await client.leave(); return }
+        client.on('token-privilege-will-expire', async () => {
           try {
-            const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
-            const tokenResponse = await fetch(
-              `${apiUrl}/agora/token?channelName=${channelName}&uid=0`
-            )
-            const tokenData = await tokenResponse.json()
-
-            if (tokenData.error) {
-              retries--
-              await new Promise(resolve => setTimeout(resolve, 500))
-              continue
-            }
-
-            token = tokenData.token
-            break
-          } catch (error) {
-            console.error('❌ Erro ao buscar token Agora:', error)
-            retries--
-            if (retries > 0) {
-              await new Promise(resolve => setTimeout(resolve, 500))
+            const renewed = await fetchVoiceToken()
+            if (!cancelled) await client.renewToken(renewed.token)
+          } catch {
+            if (!cancelled) {
+              fail('A autorização de áudio expirou. Tente conectar novamente.')
             }
           }
-        }
-
-        if (!token) {
-          console.error('❌ Falha ao gerar token após 3 tentativas')
-          return
-        }
-
-        const uid = await client.join(appId, channelName, token, 0)
+        })
 
         myAgoraUidRef.current = uid.toString()
         if (mySocketId && socket) {
@@ -343,22 +422,27 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
           })
         }
 
-        const localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-          encoderConfig: 'music_standard',
-        })
-        localTrackRef.current = localAudioTrack
-        setLocalAudioTrack(localAudioTrack)
-
         await client.publish([localAudioTrack])
+        if (cancelled) { localAudioTrack.close(); await client.leave(); return }
         setIsConnected(true)
+        setIsMuted(false)
+        clearTimeout(watchdog)
+        void audioContext.resume().catch(() => {})
       } catch (error) {
         console.error('❌ Erro ao inicializar Agora:', error)
+        const code = String((error as any)?.code || '')
+        fail(code.includes('PERMISSION') ? 'Permita o acesso ao microfone no navegador e tente novamente.' :
+          code.includes('DEVICE_NOT_FOUND') ? 'Nenhum microfone foi encontrado. Conecte um microfone e tente novamente.' :
+          error instanceof Error ? error.message : 'Não foi possível conectar o áudio. Tente novamente.')
       }
     }
 
     initAgora()
 
     return () => {
+      cancelled = true
+      clearTimeout(watchdog)
+      resumeController.abort()
       if (socket) {
         socket.off('agora-uid-announced')
         socket.off('walls-updated')
@@ -374,23 +458,27 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         } catch (e) {}
       })
       remoteAudioNodesRef.current.clear()
+      socketToAgoraMapRef.current.clear()
+      agoraVoiceRolesRef.current.clear()
+      setRemoteUsers(new Set())
+      setPlaybackBlocked(false)
 
       if (localTrackRef.current) {
         localTrackRef.current.close()
       }
       if (clientRef.current) {
-        clientRef.current.leave()
+        void clientRef.current.leave().catch(() => {})
       }
       if (audioContextRef.current) {
-        audioContextRef.current.close()
+        void audioContextRef.current.close().catch(() => {})
       }
       setIsConnected(false)
     }
-  }, [channelName, maxDistance, socket, mySocketId])
+  }, [channelName, maxDistance, socket, mySocketId, attempt])
 
   useEffect(() => {
     updateSpatialAudio()
-  }, [myToken?.x, myToken?.y, walls])
+  }, [isHost, myToken?.x, myToken?.y, walls, isDeafened])
 
   const toggleMute = () => {
     if (localTrackRef.current) {
@@ -404,7 +492,8 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   }
 
   const toggleDeafen = () => {
-    const nextDeafenState = !isDeafened
+    const nextDeafenState = !isDeafenedRef.current
+    isDeafenedRef.current = nextDeafenState
     setIsDeafened(nextDeafenState)
     if (socket) {
       socket.emit('toggle-audio-deafen', { isDeafened: nextDeafenState })
@@ -414,6 +503,11 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
   return {
     isConnected,
+    playbackBlocked,
+    enablePlayback,
+    audioError,
+    audioStatus,
+    retryAudio,
     isMuted,
     isDeafened,
     toggleMute,

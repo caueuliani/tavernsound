@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000">
+<title>Caverna da Lagoa Azul — mapa de teste TavernSound</title>
+<defs><pattern id="rock" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="#343c3c"/><path d="m0 20 30-10 25 28 45-9M30 10l-5 58 43 17 32-13M55 38l13 47" fill="none" stroke="#242b2e" stroke-width="5"/></pattern><radialGradient id="water"><stop stop-color="#478f98"/><stop offset="1" stop-color="#183f4c"/></radialGradient></defs>
+<rect width="1000" height="1000" fill="url(#rock)"/>
+<path d="m70 200 75-90 145-35 110 65 25 110 110 75 85-75 10-110 100-60 130 50 70 135-45 115-130 45-90-10-55 75 10 100 125 20 70 95-10 145-125 75-175-35-65-115-15-110-110-20-55 105-110 25-110-65-35-120 55-110 55-75-55-70-90-15Z" fill="#848070" stroke="#202a2c" stroke-width="28" stroke-linejoin="round"/>
+<path d="m70 200 75-90 145-35 110 65 25 110 110 75 85-75 10-110 100-60 130 50 70 135-45 115-130 45-90-10-55 75 10 100 125 20 70 95-10 145-125 75-175-35-65-115-15-110-110-20-55 105-110 25-110-65-35-120 55-110 55-75-55-70-90-15Z" fill="none" stroke="#aaa18a" stroke-width="5" stroke-linejoin="round"/>
+<path d="M651 159q110-75 190 48t-11 112q-40 65-120 23t-59-183" fill="url(#water)" stroke="#385964" stroke-width="12"/>
+<path d="M695 185q68-39 105 26M703 309q43 20 92-6" fill="none" stroke="#79b6bb" stroke-width="4" opacity=".5"/>
+<g fill="#4f5755" stroke="#333e3d" stroke-width="5"><path d="m190 185 35-25 31 25-5 48-39 13-31-26Z"/><path d="m310 260 25-15 17 28-9 22-29-3Z"/><path d="m203 589 35-28 26 36-16 30-43 1Z"/><path d="m659 739 41-34 44 17 5 44-43 29-48-22Z"/></g>
+<g fill="#b1d3b4" stroke="#467767" stroke-width="3"><path d="m151 264 10-40 14 40Z"/><path d="m168 270 20-59 12 53Z"/><path d="m724 824 12-41 12 42Z"/><path d="m747 837 13-57 19 50Z"/></g>
+<g fill="#b4ab8d" opacity=".65"><circle cx="413" cy="432" r="8"/><circle cx="465" cy="460" r="5"/><circle cx="532" cy="376" r="9"/><circle cx="596" cy="646" r="7"/><circle cx="253" cy="626" r="5"/></g>
+</svg>

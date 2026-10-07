@@ -4,13 +4,18 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
-import { verifySession } from '../common/session.util';
+import { SessionService } from '../auth/session.service';
+import { RoomAccessService } from './room-access.service';
+import { createHash, randomInt, randomUUID } from 'crypto';
 import { AudioPosition, SpatialAudioSettings, WallData } from './dto/room.dto';
+import { TestSafetyService } from '../safety/test-safety.service';
+import { TEST_LIMITS } from '../safety/test-policy';
 
 interface TokenData {
   id: string;
@@ -27,6 +32,7 @@ interface TokenData {
 }
 
 interface PlayerData {
+  creatingToken?: boolean;
   id: string;
   tokens: TokenData[];
   agoraUid?: string;
@@ -62,41 +68,96 @@ interface RoomData {
     },
     credentials: true,
   },
-  maxHttpBufferSize: 10 * 1024 * 1024,
+  maxHttpBufferSize: 16 * 1024,
 })
-export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
+  publishTokenImage(roomId: string, tokenId: string, imageData: string) {
+    const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
+    if (token) token.imageUrl = imageData;
+    this.server.to(roomId).emit('token-image-updated', { tokenId, imageData });
+  }
+  closeRoom(roomId: string) {
+    this.server.to(roomId).emit('room-error', { message: 'Esta sala foi excluída pelo mestre. Volte para a página inicial.' });
+    this.server.in(roomId).disconnectSockets(true);
+    this.rooms.delete(roomId);
+  }
+  publishScene(roomId: string, scene: any) {
+    const room = this.rooms.get(roomId);
+    if (room) room.walls = scene.walls;
+    this.server.to(roomId).emit('scene-updated', scene);
+  }
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly sessions: SessionService, private readonly access: RoomAccessService, private readonly safety: TestSafetyService) {}
 
   private players: Map<string, PlayerData> = new Map();
   private rooms: Map<string, RoomData> = new Map();
 
-  // Lê e verifica (HMAC) o cookie user-session do handshake do Socket.IO
-  private parseSessionCookie(client: Socket): { id: string; name: string; email: string } | null {
-    const cookieHeader = client.handshake.headers.cookie || '';
-    for (const part of cookieHeader.split(';')) {
-      const eqIndex = part.indexOf('=');
-      if (eqIndex === -1) continue;
-      const key = part.slice(0, eqIndex).trim();
-      if (key !== 'user-session') continue;
+  private parseSessionCookie(client: Socket) {
+    return client.data.session as Awaited<ReturnType<SessionService['resolve']>>;
+  }
+
+  afterInit(server: Server) {
+    server.use(async (client, next) => {
       try {
-        const raw = decodeURIComponent(part.slice(eqIndex + 1).trim());
-        const parsed = verifySession(raw);
-        if (parsed?.id) return parsed as { id: string; name: string; email: string };
-      } catch {
-        return null;
+        this.safety.rate(`connect:${client.handshake.address}`, 10);
+        if (this.safety.enabled && server.sockets.sockets.size >= 10) throw new Error();
+        const origin = client.handshake.headers.origin;
+        if (origin && origin !== (process.env.FRONTEND_URL || 'http://localhost:3000')) throw new Error();
+        client.data.session = await this.sessions.require(client.handshake.headers.cookie);
+        await this.safety.consumeOperation();
+        next();
+      } catch { next(new Error('Faça login para conectar à mesa.')); }
+    });
+    this.sessions.on('revoked', (sid: string) => {
+      for (const client of server.sockets.sockets.values()) {
+        if (client.data.session?.sid === sid) client.disconnect(true);
       }
-    }
-    return null;
+    });
   }
 
   handleConnection(client: Socket) {
+    const session = this.parseSessionCookie(client);
+    if (!session) { client.disconnect(true); return; }
+    const expiry = setTimeout(() => client.disconnect(true), Math.max(0, session.exp * 1000 - Date.now()));
+    expiry.unref();
+    client.once('disconnect', () => clearTimeout(expiry));
+    if (this.safety.enabled) {
+      client.data.lobbyTimer = setTimeout(() => {
+        if (!this.players.has(client.id)) {
+          client.emit('room-error', { message: 'Conexão ociosa encerrada. Atualize a página para continuar.' });
+          client.disconnect(true);
+        }
+      }, TEST_LIMITS.lobbyMs);
+      client.data.lobbyTimer.unref();
+    }
+    client.use(async (_packet, next) => {
+      try {
+        this.safety.rate(`socket-ip:${client.handshake.address}`, 60, 1000);
+        this.safety.rate(`socket-user:${session.id}`, 20, 1000);
+        if (this.safety.enabled && ['upload-map', 'update-token-image'].includes(_packet[0])) this.safety.requireUploads();
+        await this.safety.consumeOperation();
+        client.data.session = await this.sessions.require(client.handshake.headers.cookie);
+        const roomId = this.players.get(client.id)?.roomId;
+        if (roomId) await this.access.require(roomId, client.data.session.id);
+        if (!client.connected) throw new Error('Conexão encerrada.');
+        next();
+      } catch (error) {
+        client.emit('room-error', { message: error instanceof Error ? error.message : 'Sessão ou acesso à sala não é mais válido.' });
+        client.disconnect(true);
+        next(new Error('Não autorizado'));
+      }
+    });
     console.log(`🟢 Cliente conectado: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
+    clearTimeout(client.data.lobbyTimer);
+    clearTimeout(client.data.testTimer);
+    clearInterval(client.data.testHeartbeat);
+    // Expiring leases are the fallback if the database is temporarily unavailable.
+    if (this.safety.enabled) void this.safety.release(client.id).catch(() => {});
     console.log(`🔴 Cliente desconectado: ${client.id}`);
 
     const player = this.players.get(client.id);
@@ -114,7 +175,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         // Remove tokens da memória, mas NÃO do banco — o estado do mapa persiste
         const tokenIds = player.tokens.map(t => t.id);
-        room.tokens = room.tokens.filter(t => t.playerId !== client.id);
+        room.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
         client.to(player.roomId).emit('remove-player-tokens', {
           playerId: client.id,
           tokenIds,
@@ -143,6 +204,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const roomName = data.name || `Sala de ${client.id.slice(0, 4)}`;
 
     const session = this.parseSessionCookie(client);
+
+    if (!session?.id) {
+      client.emit('room-error', { message: 'Faça login para criar uma sala.' });
+      return null;
+    }
 
     // FREE tier: at most 1 active room per user
     if (session?.id) {
@@ -174,9 +240,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
-    await this.prisma.room.create({
-      data: { id: roomId, name: roomName, ownerId: session?.id ?? null },
-    });
+    try {
+      await this.safety.createRoom({ id: roomId, name: String(roomName).slice(0, 100), ownerId: session.id });
+    } catch (error) {
+      client.emit('room-error', { message: error instanceof Error ? error.message : 'Não foi possível criar a sala.' });
+      return null;
+    }
 
     const room: RoomData = {
       id: roomId,
@@ -184,6 +253,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       createdAt: new Date(),
       players: new Map(),
       tokens: [],
+      ownerId: session?.id ?? null,
       walls: [],
       spatialAudioSettings: {
         maxDistance: 1000,
@@ -203,6 +273,30 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { roomId: string },
     @ConnectedSocket() client: Socket,
   ) {
+    if (client.data.joining) return;
+    client.data.joining = true;
+    try { await this.joinRoom(data, client); }
+    catch (error) {
+      client.emit('room-error', { message: error instanceof Error ? error.message : 'Não foi possível entrar na sala.' });
+      client.disconnect(true);
+    } finally { client.data.joining = false; }
+  }
+
+  private async joinRoom(data: { roomId: string }, client: Socket) {
+    const session = this.parseSessionCookie(client);
+    if (!session?.id) {
+      client.emit('room-error', { message: 'Faça login para entrar na sala.' });
+      return;
+    }
+    if (this.players.has(client.id)) {
+      client.emit('room-error', { message: 'Este cliente já entrou em uma sala.' });
+      return;
+    }
+    try { await this.access.require(data?.roomId, session.id); }
+    catch {
+      client.emit('room-error', { message: 'Sala indisponível ou conta não autorizada. Peça acesso ao mestre.' });
+      return;
+    }
     let room = this.rooms.get(data.roomId);
 
     // Sala não está na memória: servidor foi reiniciado, recarregar do banco
@@ -217,6 +311,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
+      const legacyHostTokenId = dbRoom.ownerId
+        ? createHash('sha256').update(`${data.roomId}:${dbRoom.ownerId}`).digest('hex')
+        : null;
       // Tokens do banco usam o próprio id como playerId para garantir chaves únicas no frontend
       const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
         id: t.id,
@@ -224,7 +321,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         y: t.y,
         color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
         playerId: t.id,
-        playerName: t.name,
+        playerName: t.id === legacyHostTokenId ? 'Token antigo (sem vínculo)' : t.name,
         hp: t.hp ?? undefined,
         maxHp: t.maxHp ?? undefined,
         imageUrl: t.imageUrl ?? undefined,
@@ -237,7 +334,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         players: new Map(),
         tokens: restoredTokens,
         fogData: Array.isArray(dbRoom.fogOfWarData) ? (dbRoom.fogOfWarData as boolean[]) : undefined,
-        mapUrl: dbRoom.mapUrl ?? undefined,
+        mapUrl: dbRoom.mapUrl?.startsWith('db-webp:') ? undefined : dbRoom.mapUrl ?? undefined,
         ownerId: dbRoom.ownerId,
         walls: [],
         spatialAudioSettings: {
@@ -251,8 +348,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       console.log(`🔄 Sala ${data.roomId} restaurada do banco com ${restoredTokens.length} token(s)`);
     }
 
-    const session = this.parseSessionCookie(client);
-
     let playerName: string;
     if (session?.name) {
       playerName = session.name;
@@ -265,7 +360,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     const ownerId = room.ownerId;
-    const isHost = ownerId ? ownerId === session?.id : room.players.size === 0;
+    const isHost = Boolean(ownerId && ownerId === session.id);
 
     const PLAYER_LIMITS: Record<string, number> = { FREE: 4, BASIC: 6, PRO: 12, ENTERPRISE: 100 };
     if (ownerId) {
@@ -276,7 +371,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const isSubActive = ownerSub?.status === 'ACTIVE' || ownerSub?.status === 'TRIALING';
       const activeTier = isSubActive ? (ownerSub?.tier ?? 'FREE') : 'FREE';
-      const limit = (PLAYER_LIMITS as Record<string, number>)[activeTier] || 4;
+      const limit = this.safety.enabled ? TEST_LIMITS.participants : (PLAYER_LIMITS as Record<string, number>)[activeTier] || 4;
 
       if (room.players.size >= limit) {
         client.emit('room-error', {
@@ -286,6 +381,29 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
+    // The Founders Beta runs one API instance; sockets absent here are leases left by a restart.
+    await this.safety.admit(data.roomId, session.id, session.sid, client.id, new Set(this.server.sockets.sockets.keys()));
+    if (this.safety.enabled) {
+      if (!client.connected) { await this.safety.release(client.id); return; }
+      clearTimeout(client.data.lobbyTimer);
+      const stop = (message: string) => {
+        client.emit('room-error', { message });
+        client.disconnect(true);
+      };
+      let checking = false;
+      client.data.testHeartbeat = setInterval(async () => {
+        if (checking) return;
+        checking = true;
+        try {
+          await this.sessions.require(client.handshake.headers.cookie);
+          await this.access.require(data.roomId, session.id);
+          await this.safety.heartbeat(client.id);
+        } catch { stop('Sessão de testes encerrada ou indisponível.'); }
+        finally { checking = false; }
+      }, TEST_LIMITS.heartbeatMs);
+      client.data.testHeartbeat.unref();
+    }
+
     const playerData: PlayerData = {
       id: client.id,
       tokens: [],
@@ -293,37 +411,35 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       roomId: data.roomId,
       userId: session?.id,
       isHost,
-      audioPosition: { x: 0, y: 0, z: 0 },
+      audioPosition: isHost ? undefined : { x: 0, y: 0, z: 0 },
       isMuted: false,
       isDeafened: false,
       isSpeaking: false,
     };
 
+    const persistentTokenId = createHash('sha256').update(`${data.roomId}:${session.id}`).digest('hex');
+    const ownToken = room.tokens.find(t => t.id === persistentTokenId);
+    if (ownToken && !isHost) {
+      this.server.to(data.roomId).emit('remove-player-tokens', { playerId: ownToken.playerId });
+      ownToken.playerId = client.id;
+      playerData.tokens.push(ownToken);
+      playerData.audioPosition = { x: ownToken.x, y: ownToken.y, z: 0 };
+      this.server.to(data.roomId).emit('token-created', ownToken);
+    }
     this.players.set(client.id, playerData);
     room.players.set(client.id, playerData);
     client.join(data.roomId);
 
-    if (session?.id) {
-      this.prisma.roomMember.create({
-        data: {
-          roomId: data.roomId,
-          userId: session.id,
-          nickname: playerName,
-          role: isHost ? 'HOST' : 'PLAYER',
-        },
-      }).catch(() => {});
-    }
-
     const [recentRolls, chatEvents] = await Promise.all([
       this.prisma.diceRoll.findMany({
         where: { roomId: data.roomId },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { timestamp: 'desc' },
         take: 30,
       }),
       this.prisma.event.findMany({
         where: {
           eventType: 'CHAT',
-          metadata: { equals: { roomId: data.roomId } } as any,
+          metadata: { path: ['roomId'], equals: data.roomId },
         },
         orderBy: { timestamp: 'desc' },
         take: 50,
@@ -331,6 +447,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     ]);
 
     client.emit('room-joined', {
+      testMode: this.safety.enabled,
+      testEndsAt: null,
       roomId: data.roomId,
       roomName: room.name,
       playerName,
@@ -338,6 +456,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       players: Array.from(room.players.values()).map(p => ({
         id: p.id,
         name: p.name,
+        isHost: p.isHost === true,
         agoraUid: p.agoraUid,
         audioPosition: p.audioPosition,
         isMuted: p.isMuted,
@@ -354,7 +473,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         result: r.result,
         rolls: r.rolls,
         modifier: r.modifier,
-        timestamp: r.createdAt.getTime(),
+        timestamp: r.timestamp.getTime(),
       })),
       chatHistory: chatEvents.reverse().map(e => {
         const meta = e.metadata as any;
@@ -371,6 +490,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.to(data.roomId).emit('player-joined', {
       playerId: client.id,
       playerName,
+      isHost,
       audioPosition: playerData.audioPosition,
     });
 
@@ -391,7 +511,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     const player = this.players.get(client.id);
-    if (!player || !player.roomId) return;
+    if (!player || !player.roomId || player.isHost) return;
 
     player.audioPosition = data.position;
 
@@ -451,47 +571,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
-  @SubscribeMessage('sync-walls')
-  handleSyncWalls(
-    @MessageBody() data: { walls: WallData[] },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const player = this.players.get(client.id);
-    if (!player || !player.roomId || !player.isHost) return;
-
-    const room = this.rooms.get(player.roomId);
-    if (!room) return;
-
-    room.walls = data.walls;
-
-    this.server.to(player.roomId).emit('walls-updated', {
-      walls: data.walls,
-    });
-  }
-
-  @SubscribeMessage('toggle-door')
-  handleToggleDoor(
-    @MessageBody() data: { wallId: string; isOpen: boolean },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const player = this.players.get(client.id);
-    if (!player || !player.roomId) return;
-
-    const room = this.rooms.get(player.roomId);
-    if (!room || !room.walls) return;
-
-    const wall = room.walls.find(w => w.id === data.wallId);
-    if (wall && wall.isDoor) {
-      wall.isOpen = data.isOpen;
-
-      this.server.to(player.roomId).emit('door-toggled', {
-        wallId: data.wallId,
-        isOpen: data.isOpen,
-        toggledBy: player.name,
-      });
-    }
-  }
-
   @SubscribeMessage('create-token')
   async handleCreateToken(
     @MessageBody() data: {
@@ -510,32 +589,44 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!room) return;
 
     const token: TokenData = {
-      id: data.tokenId,
+      id: player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex'),
       x: data.x,
       y: data.y,
       color: data.color,
       playerId: client.id,
-      playerName: data.playerName || player.name,
+      playerName: player.isHost ? 'Token de cenário' : data.playerName || player.name,
     };
+
+    if (player.tokens.length) {
+      client.emit('token-created', player.tokens[0]);
+      return { ok: true };
+    }
+    if (player.creatingToken) return { ok: false };
+    player.creatingToken = true;
+    try {
+      await this.prisma.token.create({
+        data: {
+          id: token.id,
+          roomId: player.roomId,
+          name: token.playerName || 'Token',
+          x: data.x,
+          y: data.y,
+          color: `#${data.color.toString(16).padStart(6, '0')}`,
+        },
+      });
+    } catch {
+      client.emit('room-error', { message: 'Não foi possível criar o token.' });
+      return { ok: false };
+    } finally {
+      player.creatingToken = false;
+    }
 
     player.tokens.push(token);
     room.tokens.push(token);
 
-    await this.prisma.token.upsert({
-      where: { id: data.tokenId },
-      create: {
-        id: data.tokenId,
-        roomId: player.roomId,
-        name: token.playerName || 'Token',
-        x: data.x,
-        y: data.y,
-        color: `#${data.color.toString(16).padStart(6, '0')}`,
-      },
-      update: { x: data.x, y: data.y },
-    });
-
     this.server.to(player.roomId).emit('token-created', token);
     console.log(`🎯 Token criado por ${token.playerName} em (${data.x},${data.y}) na sala ${player.roomId}`);
+    return { ok: true };
   }
 
   @SubscribeMessage('move-token')
@@ -549,7 +640,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.rooms.get(player.roomId);
     if (!room) return;
 
-    const token = player.tokens.find(t => t.id === data.tokenId);
+    const token = player.tokens.find(t => t.id === data.tokenId) ??
+      (player.isHost ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id) : undefined);
     if (!token) return;
 
     token.x = data.x;
@@ -562,13 +654,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     // Se o token for do próprio jogador, atualizamos sua posição de áudio correspondente
-    player.audioPosition = { x: data.x, y: data.y, z: 0 };
+    if (!player.isHost) player.audioPosition = { x: data.x, y: data.y, z: 0 };
 
     client.to(player.roomId).emit('token-moved', {
       tokenId: data.tokenId,
       x: data.x,
       y: data.y,
-      playerId: client.id,
+      playerId: token.playerId,
     });
 
     this.prisma.token
@@ -584,11 +676,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
 
-    player.agoraUid = data.agoraUid;
+    const session = this.parseSessionCookie(client);
+    if (!session || data.agoraUid !== this.sessions.voiceUid(session)) return;
+    player.agoraUid = this.sessions.voiceUid(session);
+
+    // The audio listener starts after room-joined. Replay existing peers only
+    // once this client has joined Agora and is ready to receive their IDs.
+    for (const [socketId, peer] of this.players) {
+      if (socketId !== client.id && peer.roomId === player.roomId && peer.agoraUid) {
+        client.emit('agora-uid-announced', { socketId, agoraUid: peer.agoraUid, isHost: peer.isHost === true });
+      }
+    }
 
     this.server.to(player.roomId).emit('agora-uid-announced', {
       socketId: client.id,
       agoraUid: data.agoraUid,
+      isHost: player.isHost === true,
     });
   }
 
@@ -649,57 +752,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       .catch(() => {});
   }
 
-  @SubscribeMessage('upload-map')
-  handleUploadMap(
-    @MessageBody() data: { mapData: string; width: number; height: number },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const player = this.players.get(client.id);
-    if (!player || !player.roomId) return;
-    if (!player.isHost) {
-      client.emit('room-error', { message: 'Apenas o host pode alterar o mapa.' });
-      return;
-    }
-
-    const room = this.rooms.get(player.roomId);
-    if (room) room.mapUrl = data.mapData;
-
-    this.server.to(player.roomId).emit('map-uploaded', {
-      mapData: data.mapData,
-      width: data.width,
-      height: data.height,
-      uploadedBy: player.name,
-    });
-
-    this.prisma.room
-      .update({ where: { id: player.roomId }, data: { mapUrl: data.mapData } })
-      .catch(() => {});
-
-    console.log(`🗺️ ${player.name} enviou mapa (${data.width}x${data.height}) para sala ${player.roomId}`);
-  }
-
-  @SubscribeMessage('remove-map')
-  handleRemoveMap(
-    @MessageBody() _data: Record<string, never>,
-    @ConnectedSocket() client: Socket,
-  ) {
-    const player = this.players.get(client.id);
-    if (!player || !player.roomId) return;
-    if (!player.isHost) {
-      client.emit('room-error', { message: 'Apenas o host pode remover o mapa.' });
-      return;
-    }
-
-    const room = this.rooms.get(player.roomId);
-    if (room) room.mapUrl = undefined;
-
-    this.server.to(player.roomId).emit('map-removed', { removedBy: player.name });
-
-    this.prisma.room
-      .update({ where: { id: player.roomId }, data: { mapUrl: null } })
-      .catch(() => {});
-  }
-
   @SubscribeMessage('update-token-hp')
   handleUpdateTokenHp(
     @MessageBody() data: { tokenId: string; hp: number; maxHp: number },
@@ -715,10 +767,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!player.isHost && !ownsToken) return;
 
     const token = room.tokens.find(t => t.id === data.tokenId);
-    if (token) {
-      token.hp = data.hp;
-      token.maxHp = data.maxHp;
-    }
+    if (!token) return;
+    token.hp = data.hp;
+    token.maxHp = data.maxHp;
 
     this.server.to(player.roomId).emit('token-hp-updated', {
       tokenId: data.tokenId,
@@ -728,33 +779,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     this.prisma.token
       .update({ where: { id: data.tokenId }, data: { hp: data.hp, maxHp: data.maxHp } })
-      .catch(() => {});
-  }
-
-  @SubscribeMessage('update-token-image')
-  handleUpdateTokenImage(
-    @MessageBody() data: { tokenId: string; imageData: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const player = this.players.get(client.id);
-    if (!player || !player.roomId) return;
-
-    const room = this.rooms.get(player.roomId);
-    if (!room) return;
-
-    const ownsToken = player.tokens.some(t => t.id === data.tokenId);
-    if (!player.isHost && !ownsToken) return;
-
-    const token = room.tokens.find(t => t.id === data.tokenId);
-    if (token) token.imageUrl = data.imageData;
-
-    this.server.to(player.roomId).emit('token-image-updated', {
-      tokenId: data.tokenId,
-      imageData: data.imageData,
-    });
-
-    this.prisma.token
-      .update({ where: { id: data.tokenId }, data: { imageUrl: data.imageData } })
       .catch(() => {});
   }
 
@@ -786,6 +810,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   private generateRoomId(): string {
-    return Math.random().toString(36).substring(2, 8).toUpperCase();
+    return Array.from({ length: 6 }, () => '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'[randomInt(36)]).join('');
   }
 }
+

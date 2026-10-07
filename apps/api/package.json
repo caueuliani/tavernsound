@@ -27,9 +27,11 @@
     "@nestjs/platform-socket.io": "^11.1.14",
     "@nestjs/websockets": "^11.1.14",
     "@prisma/client": "^6.19.2",
+    "agora-access-token": "^2.0.4",
     "bcryptjs": "^3.0.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "sharp": "^0.35.4",
     "socket.io": "^4.8.3",
     "stripe": "^17.7.0"
   },
@@ -61,6 +63,9 @@
     "typescript-eslint": "^8.20.0"
   },
   "jest": {
+    "setupFiles": [
+      "<rootDir>/../test/setup-env.js"
+    ],
     "moduleFileExtensions": [
       "js",
       "json",

@@ -1,0 +1,16 @@
+# Prepared locally only. No backend or billing has been created.
+# Select apps/web as the backend root. Complete the environment before rollout.
+runConfig:
+  minInstances: 0
+  maxInstances: 1
+  concurrency: 10
+  cpu: 1
+  memoryMiB: 512
+env:
+  - variable: TEST_MODE
+    value: "true"
+    availability: [BUILD, RUNTIME]
+# Add API_URL, NEXT_PUBLIC_API_URL, NEXTAUTH_URL and Google OAuth configuration.
+# SESSION_SECRET, INTERNAL_API_SECRET and GOOGLE_CLIENT_SECRET must reference
+# Secret Manager secrets, never literal values in this file.
+# Automatic rollouts must be disabled in the backend rollout settings.

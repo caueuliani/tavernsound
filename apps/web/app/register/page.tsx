@@ -117,14 +117,14 @@ export default function RegisterPage() {
 
           <div style={{ marginBottom: "1rem" }}>
             <label style={{ display: "block", marginBottom: "0.5rem", color: "#ccc" }}>
-              Senha
+              Senha (mínimo de 12 caracteres)
             </label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={6}
+              minLength={12}
               style={{
                 width: "100%",
                 padding: "0.75rem",
