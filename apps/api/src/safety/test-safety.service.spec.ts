@@ -60,9 +60,30 @@ describe('Beta limits (transaction double)', () => {
     process.env.APP_ENV = 'invalid';
     expect(() => appEnvironment()).toThrow('APP_ENV');
   });
-  it('allows only one room even with concurrent creation attempts', async () => {
+  it('does not let owner A create a second room even with concurrent attempts', async () => {
     const results = await Promise.allSettled(['ABC123', 'DEF456'].map(id => safety.createRoom({ id, name: 'Test', ownerId: 'owner' })));
     expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    await expect(safety.createRoom({ id: 'GHI789', name: 'Second', ownerId: 'owner' }))
+      .rejects.toThrow('A beta permite uma única sala. Utilize a sala existente.');
+  });
+  it('lets owner B create a room when owner A already has one', async () => {
+    await safety.createRoom({ id: 'ABC123', name: 'A', ownerId: 'owner-a' });
+    await expect(safety.createRoom({ id: 'DEF456', name: 'B', ownerId: 'owner-b' })).resolves.toMatchObject({ ownerId: 'owner-b' });
+    expect(db.rooms).toHaveLength(2);
+  });
+  it('lets owner B create a room even when they are a member of owner A’s room', async () => {
+    await safety.createRoom({ id: 'ABC123', name: 'A', ownerId: 'owner-a' });
+    db.addMember('ABC123', 'owner-b');
+    expect(db.rooms[0].members).toContain('owner-b');
+    await expect(safety.createRoom({ id: 'DEF456', name: 'B', ownerId: 'owner-b' })).resolves.toMatchObject({ ownerId: 'owner-b' });
+  });
+  it('lets two masters own one room each concurrently', async () => {
+    const results = await Promise.allSettled([
+      safety.createRoom({ id: 'ABC123', name: 'A', ownerId: 'owner-a' }),
+      new TestSafetyService(db as any).createRoom({ id: 'DEF456', name: 'B', ownerId: 'owner-b' }),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(2);
+    expect(db.rooms.map(room => room.ownerId).sort()).toEqual(['owner-a', 'owner-b']);
   });
   it('admits at most five participants across separate service instances', async () => {
     const other = new TestSafetyService(db as any);

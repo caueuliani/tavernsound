@@ -69,7 +69,7 @@ export class TestSafetyService {
   async createRoom(data: { id: string; name: string; ownerId: string }) {
     if (!this.enabled) return this.prisma.room.create({ data });
     return this.locked(async (_state, tx) => {
-      if (await tx.room.count() >= 1) throw new ForbiddenException('A beta permite uma única sala. Utilize a sala existente.');
+      if (await tx.room.count({ where: { ownerId: data.ownerId } }) >= 1) throw new ForbiddenException('A beta permite uma única sala. Utilize a sala existente.');
       return tx.room.create({ data });
     });
   }
