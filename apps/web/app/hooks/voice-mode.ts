@@ -7,8 +7,10 @@ export function remoteVoiceMode(
   hasLocalToken: boolean,
   hasRemoteToken: boolean,
   isDeafened: boolean,
+  localSceneId?: string,
+  remoteSceneId?: string,
 ): VoiceMode {
   if (isDeafened || !remoteRole) return 'silent'
   if (localIsHost || remoteRole === 'host') return 'global'
-  return hasLocalToken && hasRemoteToken ? 'spatial' : 'silent'
+  return localSceneId && remoteSceneId && localSceneId === remoteSceneId && hasLocalToken && hasRemoteToken ? 'spatial' : 'silent'
 }

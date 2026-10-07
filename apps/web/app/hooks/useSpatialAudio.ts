@@ -20,6 +20,7 @@ interface SpatialAudioConfig {
   onLocalSpeakingChange?: (speaking: boolean) => void
   channelName: string
   isHost: boolean
+  sceneId?: string
   myToken: Token | null
   allTokens: Map<string, Token>
   walls?: WallData[]
@@ -40,6 +41,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   const {
     channelName,
     isHost,
+    sceneId,
     myToken,
     allTokens,
     walls = [],
@@ -72,6 +74,9 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   const [remoteUsers, setRemoteUsers] = useState<Set<string>>(new Set())
   const socketToAgoraMapRef = useRef<Map<string, string>>(new Map())
   const agoraVoiceRolesRef = useRef<Map<string, VoiceRole>>(new Map())
+  const agoraSceneIdsRef = useRef<Map<string, string>>(new Map())
+  const sceneIdRef = useRef(sceneId)
+  sceneIdRef.current = sceneId
   const myAgoraUidRef = useRef<string>('')
 
   const [localAudioTrack, setLocalAudioTrack] = useState<any>(null)
@@ -130,6 +135,8 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         Boolean(currentToken),
         Boolean(remoteToken),
         isDeafenedRef.current,
+        sceneIdRef.current,
+        agoraSceneIdsRef.current.get(agoraUid),
       )
       if (mode === 'global') {
         // Global voices bypass both the HRTF panner and the wall filter.
@@ -317,12 +324,18 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         })
 
         if (socket) {
-          socket.on('agora-uid-announced', (data: { socketId: string; agoraUid: string; isHost: boolean }) => {
+          socket.on('agora-uid-announced', (data: { socketId: string; agoraUid: string; isHost: boolean; sceneId?: string }) => {
             for (const [socketId, uid] of socketToAgoraMapRef.current) {
               if (uid === data.agoraUid && socketId !== data.socketId) socketToAgoraMapRef.current.delete(socketId)
             }
             socketToAgoraMapRef.current.set(data.socketId, data.agoraUid)
             agoraVoiceRolesRef.current.set(data.agoraUid, data.isHost === true ? 'host' : 'player')
+            if (data.sceneId) agoraSceneIdsRef.current.set(data.agoraUid, data.sceneId)
+            updateSpatialAudio()
+          })
+          socket.on('voice-scene-updated', (data: { socketId?: string; sceneId: string }) => {
+            const uid = data.socketId && socketToAgoraMapRef.current.get(data.socketId)
+            if (uid) agoraSceneIdsRef.current.set(uid, data.sceneId)
             updateSpatialAudio()
           })
 
@@ -404,6 +417,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       resumeController.abort()
       if (socket) {
         socket.off('agora-uid-announced')
+        socket.off('voice-scene-updated')
         socket.off('walls-updated')
         socket.off('door-toggled')
         socket.off('player-audio-position-updated')
@@ -419,6 +433,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       remoteAudioNodesRef.current.clear()
       socketToAgoraMapRef.current.clear()
       agoraVoiceRolesRef.current.clear()
+      agoraSceneIdsRef.current.clear()
       setRemoteUsers(new Set())
       setPlaybackBlocked(false)
 
@@ -437,7 +452,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
   useEffect(() => {
     updateSpatialAudio()
-  }, [isHost, myToken?.x, myToken?.y, walls, isDeafened])
+  }, [isHost, sceneId, myToken?.x, myToken?.y, walls, isDeafened])
 
   const toggleMute = () => {
     if (localTrackRef.current) {

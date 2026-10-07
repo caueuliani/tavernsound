@@ -11,7 +11,9 @@ test('player hears the host without spatial processing or a host token', () => {
 })
 
 test('players with tokens remain spatial', () => {
-  assert.equal(remoteVoiceMode(false, 'player', true, true, false), 'spatial')
+  assert.equal(remoteVoiceMode(false, 'player', true, true, false, 'scene-a', 'scene-a'), 'spatial')
+  assert.equal(remoteVoiceMode(false, 'player', true, true, false, 'scene-a', 'scene-b'), 'silent')
+  assert.equal(remoteVoiceMode(false, 'player', true, true, false, 'scene-a', undefined), 'silent')
 })
 
 test('missing player tokens never grant global voice', () => {
@@ -28,4 +30,9 @@ test('deafen silences both host and spatial voices', () => {
   assert.equal(remoteVoiceMode(true, 'player', false, true, true), 'silent')
   assert.equal(remoteVoiceMode(false, 'host', true, false, true), 'silent')
   assert.equal(remoteVoiceMode(false, 'player', true, true, true), 'silent')
+})
+
+test('host voice remains global across scenes in both directions', () => {
+  assert.equal(remoteVoiceMode(true, 'player', false, false, false, 'scene-a', 'scene-b'), 'global')
+  assert.equal(remoteVoiceMode(false, 'host', true, false, false, 'scene-b', undefined), 'global')
 })

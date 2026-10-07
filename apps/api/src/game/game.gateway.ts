@@ -13,12 +13,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SessionService } from '../auth/session.service';
 import { RoomAccessService } from './room-access.service';
 import { createHash, randomInt, randomUUID } from 'crypto';
-import { AudioPosition, SpatialAudioSettings, WallData } from './dto/room.dto';
+import { AudioPosition, SpatialAudioSettings } from './dto/room.dto';
 import { TestSafetyService } from '../safety/test-safety.service';
 import { TEST_LIMITS } from '../safety/test-policy';
 
 interface TokenData {
   id: string;
+  sceneId: string;
   x: number;
   y: number;
   color: number;
@@ -40,6 +41,8 @@ interface PlayerData {
   roomId?: string;
   userId?: string;
   isHost?: boolean;
+  sceneId?: string;
+  viewedSceneId?: string;
   audioPosition?: AudioPosition;
   isMuted?: boolean;
   isDeafened?: boolean;
@@ -52,10 +55,7 @@ interface RoomData {
   createdAt: Date;
   players: Map<string, PlayerData>;
   tokens: TokenData[];
-  fogData?: boolean[];
-  mapUrl?: string;
   ownerId?: string | null;
-  walls?: WallData[];
   spatialAudioSettings?: SpatialAudioSettings;
 }
 
@@ -74,17 +74,33 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   publishTokenImage(roomId: string, tokenId: string, imageData: string) {
     const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
     if (token) token.imageUrl = imageData;
-    this.server.to(roomId).emit('token-image-updated', { tokenId, imageData });
+    if (token) this.emitToScene(roomId, token.sceneId, 'token-image-updated', { tokenId, imageData });
   }
   closeRoom(roomId: string) {
     this.server.to(roomId).emit('room-error', { message: 'Esta sala foi excluída pelo mestre. Volte para a página inicial.' });
     this.server.in(roomId).disconnectSockets(true);
     this.rooms.delete(roomId);
   }
-  publishScene(roomId: string, scene: any) {
+  private emitToScene(roomId: string, sceneId: string, event: string, payload: unknown) {
     const room = this.rooms.get(roomId);
-    if (room) room.walls = scene.walls;
-    this.server.to(roomId).emit('scene-updated', scene);
+    if (!room) return;
+    for (const player of room.players.values()) {
+      if (player.viewedSceneId === sceneId) this.server.to(player.id).emit(event, payload);
+    }
+  }
+  publishScene(roomId: string, sceneId: string, scene: any) {
+    this.emitToScene(roomId, sceneId, 'scene-updated', scene);
+  }
+  publishSceneList(roomId: string, scene: { id: string; name: string; position?: number }) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    for (const player of room.players.values()) if (player.isHost) this.server.to(player.id).emit('scene-list-updated', scene);
+  }
+  private async sceneSnapshot(roomId: string, sceneId: string) {
+    const room = this.rooms.get(roomId);
+    const scene = await this.prisma.scene.findFirst({ where: { id: sceneId, roomId }, select: { id: true, name: true, fogData: true } });
+    if (!room || !scene) return null;
+    return { sceneId, name: scene.name, tokens: room.tokens.filter(token => token.sceneId === sceneId), fogData: scene.fogData ?? null };
   }
   @WebSocketServer()
   server: Server;
@@ -242,6 +258,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     try {
       await this.safety.createRoom({ id: roomId, name: String(roomName).slice(0, 100), ownerId: session.id });
+      await this.prisma.scene.create({ data: { id: `initial-${roomId}`, roomId, name: 'Cena inicial', position: 0 } });
     } catch (error) {
       client.emit('room-error', { message: error instanceof Error ? error.message : 'Não foi possível criar a sala.' });
       return null;
@@ -254,7 +271,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       players: new Map(),
       tokens: [],
       ownerId: session?.id ?? null,
-      walls: [],
       spatialAudioSettings: {
         maxDistance: 1000,
         attenuationFactor: 1,
@@ -317,6 +333,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       // Tokens do banco usam o próprio id como playerId para garantir chaves únicas no frontend
       const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
         id: t.id,
+        sceneId: t.sceneId,
         x: t.x,
         y: t.y,
         color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
@@ -333,10 +350,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         createdAt: dbRoom.createdAt,
         players: new Map(),
         tokens: restoredTokens,
-        fogData: Array.isArray(dbRoom.fogOfWarData) ? (dbRoom.fogOfWarData as boolean[]) : undefined,
-        mapUrl: dbRoom.mapUrl?.startsWith('db-webp:') ? undefined : dbRoom.mapUrl ?? undefined,
         ownerId: dbRoom.ownerId,
-        walls: [],
         spatialAudioSettings: {
           maxDistance: 1000,
           attenuationFactor: 1,
@@ -361,6 +375,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     const ownerId = room.ownerId;
     const isHost = Boolean(ownerId && ownerId === session.id);
+    const firstScene = await this.prisma.scene.findFirst({ where: { roomId: data.roomId }, orderBy: { position: 'asc' } });
+    if (!firstScene) throw new Error('Cena inicial indisponível. Execute a migration de cenas.');
+    const assignment = isHost ? null : await this.prisma.roomSceneAssignment.findUnique({ where: { roomId_userId: { roomId: data.roomId, userId: session.id } } });
+    const sceneId = isHost ? firstScene.id : assignment?.sceneId || firstScene.id;
+    if (!isHost && !assignment) await this.prisma.roomSceneAssignment.upsert({ where: { roomId_userId: { roomId: data.roomId, userId: session.id } }, create: { roomId: data.roomId, userId: session.id, sceneId }, update: {} });
 
     const PLAYER_LIMITS: Record<string, number> = { FREE: 4, BASIC: 6, PRO: 12, ENTERPRISE: 100 };
     if (ownerId) {
@@ -411,6 +430,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       roomId: data.roomId,
       userId: session?.id,
       isHost,
+      sceneId: isHost ? undefined : sceneId,
+      viewedSceneId: sceneId,
       audioPosition: isHost ? undefined : { x: 0, y: 0, z: 0 },
       isMuted: false,
       isDeafened: false,
@@ -419,12 +440,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     const persistentTokenId = createHash('sha256').update(`${data.roomId}:${session.id}`).digest('hex');
     const ownToken = room.tokens.find(t => t.id === persistentTokenId);
+    if (ownToken && !isHost && ownToken.sceneId !== sceneId) {
+      ownToken.sceneId = sceneId;
+      await this.prisma.token.update({ where: { id: ownToken.id }, data: { sceneId } });
+    }
     if (ownToken && !isHost) {
-      this.server.to(data.roomId).emit('remove-player-tokens', { playerId: ownToken.playerId });
+      this.emitToScene(data.roomId, sceneId, 'remove-player-tokens', { playerId: ownToken.playerId });
       ownToken.playerId = client.id;
       playerData.tokens.push(ownToken);
       playerData.audioPosition = { x: ownToken.x, y: ownToken.y, z: 0 };
-      this.server.to(data.roomId).emit('token-created', ownToken);
+      this.emitToScene(data.roomId, sceneId, 'token-created', ownToken);
     }
     this.players.set(client.id, playerData);
     room.players.set(client.id, playerData);
@@ -457,14 +482,17 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         id: p.id,
         name: p.name,
         isHost: p.isHost === true,
+        userId: isHost ? p.userId : undefined,
+        sceneId: p.sceneId,
         agoraUid: p.agoraUid,
         audioPosition: p.audioPosition,
         isMuted: p.isMuted,
         isDeafened: p.isDeafened,
         isSpeaking: p.isSpeaking,
       })),
-      tokens: room.tokens,
-      walls: room.walls ?? [],
+      tokens: room.tokens.filter(token => token.sceneId === sceneId),
+      sceneId,
+      scenes: isHost ? await this.prisma.scene.findMany({ where: { roomId: data.roomId }, orderBy: { position: 'asc' }, select: { id: true, name: true, position: true } }) : [{ id: sceneId, name: (await this.prisma.scene.findUnique({ where: { id: sceneId }, select: { name: true } }))?.name || 'Cena' }],
       spatialAudioSettings: room.spatialAudioSettings,
       recentRolls: recentRolls.reverse().map(r => ({
         playerId: '',
@@ -483,16 +511,20 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
           timestamp: e.timestamp.getTime(),
         };
       }),
-      fogData: room.fogData ?? null,
-      mapUrl: room.mapUrl ?? null,
+      fogData: (await this.prisma.scene.findUnique({ where: { id: sceneId }, select: { fogData: true } }))?.fogData ?? null,
+      mapUrl: null,
     });
 
     client.to(data.roomId).emit('player-joined', {
       playerId: client.id,
       playerName,
       isHost,
+      sceneId: playerData.sceneId,
       audioPosition: playerData.audioPosition,
     });
+    for (const peer of room.players.values()) if (peer.isHost && peer.id !== client.id) {
+      this.server.to(peer.id).emit('player-roster-updated', { id: client.id, userId: session.id, name: playerName, isHost, sceneId: playerData.sceneId });
+    }
 
     this.server.to(data.roomId).emit('room-player-count', {
       count: room.players.size,
@@ -503,6 +535,66 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       .catch(() => {});
 
     console.log(`👤 ${playerName} entrou na sala ${data.roomId}`);
+  }
+
+  @SubscribeMessage('view-scene')
+  async handleViewScene(@MessageBody() data: { sceneId: string }, @ConnectedSocket() client: Socket) {
+    const player = this.players.get(client.id);
+    if (!player?.isHost || !player.roomId) return;
+    try { await this.access.requireOwner(player.roomId, player.userId!); } catch { return; }
+    const snapshot = await this.sceneSnapshot(player.roomId, data?.sceneId);
+    if (!snapshot) return;
+    player.viewedSceneId = snapshot.sceneId;
+    client.emit('scene-changed', snapshot);
+  }
+
+  @SubscribeMessage('transfer-player-scene')
+  async handleTransferPlayerScene(@MessageBody() data: { userId: string; sceneId: string }, @ConnectedSocket() client: Socket) {
+    const host = this.players.get(client.id);
+    if (!host?.isHost || !host.roomId || !data?.userId || data.userId === host.userId) return;
+    const roomId = host.roomId;
+    try { await this.access.requireOwner(roomId, host.userId!); } catch { return; }
+    const destination = await this.prisma.scene.findFirst({ where: { id: data.sceneId, roomId } });
+    if (!destination) return;
+    try { await this.access.require(roomId, data.userId); } catch { return; }
+    const target = Array.from(this.rooms.get(roomId)?.players.values() || []).find(player => player.userId === data.userId && !player.isHost);
+    const existing = await this.prisma.roomSceneAssignment.findUnique({ where: { roomId_userId: { roomId, userId: data.userId } } });
+    const sourceId = target?.sceneId || existing?.sceneId;
+    if (sourceId === destination.id) return;
+    const tokenId = createHash('sha256').update(`${roomId}:${data.userId}`).digest('hex');
+    await this.prisma.$transaction(async tx => {
+      await tx.roomSceneAssignment.upsert({ where: { roomId_userId: { roomId, userId: data.userId } }, create: { roomId, userId: data.userId, sceneId: destination.id }, update: { sceneId: destination.id } });
+      await tx.token.updateMany({ where: { id: tokenId, roomId }, data: { sceneId: destination.id, x: 5, y: 5 } });
+    });
+    const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
+    if (token) {
+      if (sourceId) this.emitToScene(roomId, sourceId, 'remove-player-tokens', { playerId: token.playerId });
+      token.sceneId = destination.id;
+      token.x = 5;
+      token.y = 5;
+      this.emitToScene(roomId, destination.id, 'token-created', token);
+    }
+    if (target) {
+      target.sceneId = destination.id;
+      target.viewedSceneId = destination.id;
+      target.audioPosition = token ? { x: 5, y: 5, z: 0 } : target.audioPosition;
+      const snapshot = await this.sceneSnapshot(roomId, destination.id);
+      if (snapshot) this.server.to(target.id).emit('scene-changed', snapshot);
+    }
+    for (const peer of this.rooms.get(roomId)?.players.values() || []) {
+      if (peer.isHost) this.server.to(peer.id).emit('player-scene-updated', { userId: data.userId, sceneId: destination.id });
+    }
+    this.server.to(roomId).emit('voice-scene-updated', { socketId: target?.id, sceneId: destination.id });
+  }
+
+  @SubscribeMessage('fog-update')
+  async handleFogUpdate(@MessageBody() data: { fogData: boolean[] }, @ConnectedSocket() client: Socket) {
+    const player = this.players.get(client.id);
+    if (!player?.isHost || !player.roomId || !player.viewedSceneId || !Array.isArray(data?.fogData) || data.fogData.length !== 100 || data.fogData.some(value => typeof value !== 'boolean')) return;
+    try { await this.access.requireOwner(player.roomId, player.userId!); } catch { return; }
+    const sceneId = player.viewedSceneId;
+    await this.prisma.scene.updateMany({ where: { id: sceneId, roomId: player.roomId }, data: { fogData: data.fogData } });
+    this.emitToScene(player.roomId, sceneId, 'fog-updated', { fogData: data.fogData });
   }
 
   @SubscribeMessage('update-audio-position')
@@ -587,17 +679,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     const room = this.rooms.get(player.roomId);
     if (!room) return;
+    const sceneId = player.viewedSceneId;
+    if (!sceneId || (!player.isHost && sceneId !== player.sceneId)) return;
+    if (![data.x, data.y].every(n => Number.isInteger(n) && n >= 0 && n < 10)) return;
 
     const token: TokenData = {
       id: player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex'),
+      sceneId,
       x: data.x,
       y: data.y,
       color: data.color,
       playerId: client.id,
       playerName: player.isHost ? 'Token de cenário' : data.playerName || player.name,
     };
+    if (player.isHost) token.playerId = token.id;
 
-    if (player.tokens.length) {
+    if (!player.isHost && player.tokens.length) {
       client.emit('token-created', player.tokens[0]);
       return { ok: true };
     }
@@ -608,6 +705,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         data: {
           id: token.id,
           roomId: player.roomId,
+          sceneId,
           name: token.playerName || 'Token',
           x: data.x,
           y: data.y,
@@ -621,10 +719,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       player.creatingToken = false;
     }
 
-    player.tokens.push(token);
+    if (!player.isHost) player.tokens.push(token);
     room.tokens.push(token);
 
-    this.server.to(player.roomId).emit('token-created', token);
+    this.emitToScene(player.roomId, sceneId, 'token-created', token);
     console.log(`🎯 Token criado por ${token.playerName} em (${data.x},${data.y}) na sala ${player.roomId}`);
     return { ok: true };
   }
@@ -641,8 +739,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!room) return;
 
     const token = player.tokens.find(t => t.id === data.tokenId) ??
-      (player.isHost ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id) : undefined);
+      (player.isHost ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id && t.sceneId === player.viewedSceneId) : undefined);
     if (!token) return;
+    if ((!player.isHost && token.sceneId !== player.sceneId) || ![data.x, data.y].every(n => Number.isInteger(n) && n >= 0 && n < 10)) return;
 
     token.x = data.x;
     token.y = data.y;
@@ -656,7 +755,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     // Se o token for do próprio jogador, atualizamos sua posição de áudio correspondente
     if (!player.isHost) player.audioPosition = { x: data.x, y: data.y, z: 0 };
 
-    client.to(player.roomId).emit('token-moved', {
+    this.emitToScene(player.roomId, token.sceneId, 'token-moved', {
       tokenId: data.tokenId,
       x: data.x,
       y: data.y,
@@ -684,7 +783,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     // once this client has joined Agora and is ready to receive their IDs.
     for (const [socketId, peer] of this.players) {
       if (socketId !== client.id && peer.roomId === player.roomId && peer.agoraUid) {
-        client.emit('agora-uid-announced', { socketId, agoraUid: peer.agoraUid, isHost: peer.isHost === true });
+        client.emit('agora-uid-announced', { socketId, agoraUid: peer.agoraUid, isHost: peer.isHost === true, sceneId: peer.sceneId });
       }
     }
 
@@ -692,6 +791,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       socketId: client.id,
       agoraUid: data.agoraUid,
       isHost: player.isHost === true,
+      sceneId: player.sceneId,
     });
   }
 
@@ -771,7 +871,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     token.hp = data.hp;
     token.maxHp = data.maxHp;
 
-    this.server.to(player.roomId).emit('token-hp-updated', {
+    this.emitToScene(player.roomId, token.sceneId, 'token-hp-updated', {
       tokenId: data.tokenId,
       hp: data.hp,
       maxHp: data.maxHp,

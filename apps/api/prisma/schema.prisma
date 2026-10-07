@@ -42,6 +42,7 @@ model User {
   subscription  Subscription?
   ownedRooms    Room[]    @relation("RoomOwner")
   roomMembers   RoomMember[]
+  sceneAssignments RoomSceneAssignment[]
   diceRolls     DiceRoll[]
   ownedCampaigns Campaign[] @relation("CampaignOwner")
   campaignMemberships CampaignMember[] @relation("CampaignMembership")
@@ -200,6 +201,8 @@ model Room {
   lastActiveAt DateTime @default(now())
   
   tokens      Token[]
+  scenes      Scene[]
+  sceneAssignments RoomSceneAssignment[]
   members     RoomMember[]
   diceRolls   DiceRoll[]
   sessions    GameSession[]
@@ -313,6 +316,8 @@ model Token {
   id          String   @id @default(cuid())
   roomId      String
   room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sceneId     String
+  scene       Scene    @relation(fields: [sceneId], references: [id], onDelete: Cascade)
   
   name        String
   x           Int
@@ -329,6 +334,37 @@ model Token {
   updatedAt   DateTime @updatedAt
   
   @@index([roomId])
+  @@index([sceneId])
+}
+
+model Scene {
+  id        String   @id @default(cuid())
+  roomId    String
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  name      String
+  position  Int
+  sceneData Json?
+  mapUrl    String?
+  fogData   Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tokens    Token[]
+  assignments RoomSceneAssignment[]
+
+  @@unique([roomId, position])
+  @@index([roomId])
+}
+
+model RoomSceneAssignment {
+  roomId String
+  userId String
+  sceneId String
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@index([sceneId])
 }
 
 // ====================================

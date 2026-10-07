@@ -13,4 +13,4 @@
 .samples img { width: 100%; max-width: 125px; height: 75px; object-fit: cover; display: block; margin: 0 auto 5px; border-radius: 3px; }
 .message { color: #ffd08a; }
 .error { color: #ffb4ab; }
-.overlay { position: absolute; inset: 4px; width: 500px; height: 500px; touch-action: none; }
+.overlay { position: absolute; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); touch-action: none; }

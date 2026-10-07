@@ -7,6 +7,7 @@ import styles from './SceneEditor.module.css'
 
 export interface SceneWall { id: string; x1: number; y1: number; x2: number; y2: number; isDoor: boolean; isOpen: boolean; blocksAudio: boolean; openings?: Opening[] }
 export interface Scene {
+  id?: string
   revision: number
   map: { url: string; width: number; height: number } | null
   settings: { scale: number; x: number; y: number; gridOpacity: number }
@@ -15,8 +16,8 @@ export interface Scene {
 const initial = (): Scene => ({ revision: 0, map: null, settings: { scale: 1, x: 0, y: 0, gridOpacity: .3 }, walls: [] })
 type Point = { x: number; y: number }
 type Tool = 'play' | 'wall' | 'door' | 'window' | 'cave' | 'select'
-export default function SceneEditor({ roomId, socket, connected, isHost, onChange, children }: {
-  roomId: string; socket: any; connected: boolean; isHost: boolean; onChange: (scene: Scene) => void; children: ReactNode
+export default function SceneEditor({ roomId, sceneId, socket, connected, isHost, onChange, children }: {
+  roomId: string; sceneId: string; socket: any; connected: boolean; isHost: boolean; onChange: (scene: Scene) => void; children: ReactNode
 }) {
   const [scene, setScene] = useState<Scene>(initial)
   const sceneRef = useRef(scene); sceneRef.current = scene
@@ -37,7 +38,8 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
   const [future, setFuture] = useState<Scene[]>([])
   const drag = useRef<{ point: Point; wall: SceneWall; endpoint?: 'start' | 'end' } | null>(null)
   const input = useRef<HTMLInputElement>(null)
-  const endpoint = apiUrl(`/rooms/${roomId}/scene`)
+  const endpoint = apiUrl(`/rooms/${roomId}/scene?sceneId=${encodeURIComponent(sceneId)}`)
+  const resource = (suffix: string) => apiUrl(`/rooms/${roomId}/scene${suffix}?sceneId=${encodeURIComponent(sceneId)}`)
   const editable = isHost && enabled && loaded && connected && !busy
   const active = editable ? tool : 'play'
   const selectedWall = scene.walls.find(w => w.id === selected)
@@ -56,7 +58,7 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
     if (!connected) return
     let disposed = false
     const applyRemote = (value: Scene) => {
-      if (value.revision <= sceneRef.current.revision) return
+      if (value.id !== sceneId || value.revision <= sceneRef.current.revision) return
       if (dirtyRef.current) { setError('O cenário foi alterado em outra conexão. Recarregue antes de salvar.'); return }
       accept(value)
     }
@@ -80,7 +82,7 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
   const request = async (suffix: string, method: string, body?: BodyInit) => {
     setBusy(true); setError('')
     try {
-      const response = await fetch(endpoint + suffix, { method, credentials: 'include', headers: {
+      const response = await fetch(resource(suffix), { method, credentials: 'include', headers: {
         'If-Match': String(sceneRef.current.revision), ...(typeof body === 'string' ? { 'Content-Type': 'application/json' } : {}),
       }, body })
       const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Não foi possível salvar.')
@@ -185,7 +187,7 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
         : { ...w, x1: w.x1 + dx, x2: w.x2 + dx, y1: w.y1 + dy, y2: w.y2 + dy } : item) })
   }
   return <>
-    <div style={{ position: 'relative', width: 508, height: 508 }}>
+    <div style={{ position: 'relative', width: 'min(508px, 100%)', aspectRatio: '1' }}>
       {children}
       <svg aria-label="Paredes e portas do cenário" className={styles.overlay} viewBox="0 0 500 500" style={{ pointerEvents: active === 'play' ? 'none' : 'auto', cursor: active === 'select' ? 'move' : 'crosshair' }}
         onPointerDown={pointerDown} onPointerMove={e => setHover(point(e))} onPointerUp={pointerUp} onPointerCancel={() => { drag.current = null }}>

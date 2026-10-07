@@ -11,6 +11,7 @@ import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
 import { apiUrl, socketUrl } from '../lib/api-url'
 import { openingBounds, pointOnWall, solidSegments } from '../lib/scene-geometry'
+import { visibleSceneTokens } from '../lib/scene-tokens'
 import styles from './Grid.module.css'
 
 const GRID_SIZE = 500
@@ -28,6 +29,7 @@ const TOKEN_COLORS = [
 
 interface Token {
   id: string
+  sceneId: string
   x: number
   y: number
   color: number
@@ -84,6 +86,10 @@ export default function Grid({ roomId }: GridProps) {
   const [diceRolls, setDiceRolls] = useState<any[]>([])
   const [mapData, setMapData] = useState<string | null>(null)
   const [scene, setScene] = useState<Scene | null>(null)
+  const [sceneId, setSceneId] = useState('')
+  const sceneIdRef = useRef('')
+  const [scenes, setScenes] = useState<{ id: string; name: string }[]>([])
+  const [players, setPlayers] = useState<{ id: string; userId?: string; name?: string; isHost?: boolean; sceneId?: string }[]>([])
   const sceneRef = useRef(scene)
   sceneRef.current = scene
   const [canvasReady, setCanvasReady] = useState(false)
@@ -112,6 +118,7 @@ export default function Grid({ roomId }: GridProps) {
   const { isConnected: audioConnected, playbackBlocked, enablePlayback, audioError, audioStatus, retryAudio, isMuted, toggleMute, remoteUsers, updateSpatialAudio } = useSpatialAudio({
     channelName: roomId,
     isHost,
+    sceneId,
     myToken: isHost ? null : myOwnToken,
     allTokens: tokensRef.current,
     walls: scene?.walls || [],
@@ -222,6 +229,12 @@ export default function Grid({ roomId }: GridProps) {
     socket.on('room-error', (data: { message: string }) => { creatingTokenRef.current = false; setRoomError(data.message) })
 
     socket.on('room-joined', (data: any) => {
+      sceneIdRef.current = data.sceneId
+      setSceneId(data.sceneId)
+      setScenes(data.scenes || [])
+      setPlayers(data.players || [])
+      setScene(null)
+      setMapData(null)
       setTestMode(data.testMode !== false)
       setTestEndsAt(data.testEndsAt ?? null)
       setConnected(true)
@@ -243,7 +256,7 @@ export default function Grid({ roomId }: GridProps) {
       tokensRef.current.clear()
       setMyOwnToken(null)
       creatingTokenRef.current = false
-      pendingTokensRef.current = data.tokens || []
+      pendingTokensRef.current = visibleSceneTokens(data.tokens || [], data.sceneId)
       if (addTokenRef.current) {
         pendingTokensRef.current.forEach(t => addTokenRef.current!(t, t.playerId === socket.id))
         pendingTokensRef.current = []
@@ -254,11 +267,41 @@ export default function Grid({ roomId }: GridProps) {
       if (Array.isArray(data.fogData) && data.fogData.length === GRID_CELLS * GRID_CELLS) {
         fogDataRef.current = data.fogData
         fogCellsRef.current.forEach((cell, idx) => { cell.visible = !data.fogData[idx] })
+      } else {
+        fogDataRef.current = new Array(GRID_CELLS * GRID_CELLS).fill(true)
+        fogCellsRef.current.forEach(cell => { cell.visible = false })
       }
 
       if (data.mapUrl && !data.mapUrl.startsWith('db-webp:')) {
         setMapData(data.mapUrl)
       }
+    })
+
+    socket.on('scene-changed', (data: { sceneId: string; name: string; tokens: Token[]; fogData: boolean[] | null }) => {
+      sceneIdRef.current = data.sceneId
+      setSceneId(data.sceneId)
+      setScene(null)
+      setMapData(null)
+      tokensRef.current.forEach(token => token.graphics.destroy({ children: true }))
+      tokensRef.current.clear()
+      setMyOwnToken(null)
+      setTokenCount(0)
+      pendingTokensRef.current = visibleSceneTokens(data.tokens, data.sceneId)
+      if (addTokenRef.current) {
+        pendingTokensRef.current.forEach(token => addTokenRef.current!(token, token.playerId === socket.id))
+        pendingTokensRef.current = []
+      }
+      fogDataRef.current = Array.isArray(data.fogData) && data.fogData.length === 100 ? data.fogData : new Array(100).fill(true)
+      fogCellsRef.current.forEach((cell, index) => { cell.visible = !fogDataRef.current[index] })
+    })
+    socket.on('scene-list-updated', (value: { id: string; name: string }) => {
+      setScenes(previous => previous.some(item => item.id === value.id) ? previous.map(item => item.id === value.id ? { ...item, name: value.name } : item) : [...previous, value])
+    })
+    socket.on('player-scene-updated', (value: { userId: string; sceneId: string }) => {
+      setPlayers(previous => previous.map(item => item.userId === value.userId ? { ...item, sceneId: value.sceneId } : item))
+    })
+    socket.on('player-roster-updated', (value: { id: string; userId: string; name: string; sceneId: string }) => {
+      setPlayers(previous => [...previous.filter(item => item.id !== value.id), value])
     })
 
     socket.on('room-player-count', (data: { count: number }) => {
@@ -290,8 +333,9 @@ export default function Grid({ roomId }: GridProps) {
 
     socket.on('player-joined', (data: { playerId: string; isHost?: boolean }) => {
       if (data.isHost === true) hostSocketIdsRef.current.add(data.playerId)
+      setPlayers(previous => [...previous.filter(item => item.id !== data.playerId), { id: data.playerId, ...(data as any) }])
     })
-    socket.on('player-left', (data: { playerId: string }) => { hostSocketIdsRef.current.delete(data.playerId) })
+    socket.on('player-left', (data: { playerId: string }) => { hostSocketIdsRef.current.delete(data.playerId); setPlayers(previous => previous.filter(item => item.id !== data.playerId)) })
 
     const initPixi = async () => {
       if (appRef.current) return
@@ -410,7 +454,7 @@ export default function Grid({ roomId }: GridProps) {
           }
         })
 
-        if (isOwn || isHostRef.current) {
+        if (isOwn || (isHostRef.current && token.playerId === token.id)) {
           container.cursor = 'pointer'
           container.on('pointerdown', (event: PIXI.FederatedPointerEvent) => {
             event.stopPropagation()
@@ -453,6 +497,7 @@ export default function Grid({ roomId }: GridProps) {
       }
 
       socket.on('token-created', (tokenData: Token) => {
+        if (tokenData.sceneId !== sceneIdRef.current) return
         const isOwn = tokenData.playerId === socket.id
         if (isOwn) creatingTokenRef.current = false
         if (!tokensRef.current.has(tokenData.playerId)) addToken(tokenData, isOwn)
@@ -612,14 +657,14 @@ export default function Grid({ roomId }: GridProps) {
   }, [roomId])
 
   useEffect(() => {
-    if (!connected || !socketRef.current) return
+    if (!connected || !sceneId || !socketRef.current) return
     const socket = socketRef.current
     let disposed = false
     const applyScene = (value: Scene) => {
-      if (!disposed) setScene(previous => previous && previous.revision > value.revision ? previous : value)
+      if (!disposed && value.id === sceneId) setScene(previous => previous && previous.id === value.id && previous.revision > value.revision ? previous : value)
     }
     socket.on('scene-updated', applyScene)
-    fetch(apiUrl(`/rooms/${roomId}/scene`), { credentials: 'include', cache: 'no-store' })
+    fetch(apiUrl(`/rooms/${roomId}/scene?sceneId=${encodeURIComponent(sceneId)}`), { credentials: 'include', cache: 'no-store' })
       .then(async response => {
         const data = await response.json()
         if (!response.ok) throw new Error(data.message || 'Não foi possível carregar o cenário.')
@@ -627,7 +672,7 @@ export default function Grid({ roomId }: GridProps) {
       })
       .catch(error => { if (!disposed) setRoomError(error.message) })
     return () => { disposed = true; socket.off('scene-updated', applyScene) }
-  }, [roomId, connected])
+  }, [roomId, connected, sceneId])
 
   // ── Mapa: recarregar quando muda ──────────────────────────────────────────
   useEffect(() => {
@@ -699,6 +744,12 @@ export default function Grid({ roomId }: GridProps) {
       <div className={styles.tableSection}>
         {roomError && <p role="alert" style={{ color: '#ffb4ab' }}>{roomError}</p>}
         <p><a href={`/room/${roomId}/scene`} style={{ color: '#ffc568' }}>Preparar cenário sem entrar no áudio →</a></p>
+        {connected && <div className={styles.sceneBar}>
+          <strong>Cena: {scenes.find(item => item.id === sceneId)?.name || 'Carregando…'}</strong>
+          {isHost && <select aria-label="Cena observada" value={sceneId} onChange={event => socketRef.current?.emit('view-scene', { sceneId: event.target.value })}>
+            {scenes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>}
+        </div>}
         <div className={styles.table}>
           <div
             ref={canvasRef}
@@ -720,6 +771,14 @@ export default function Grid({ roomId }: GridProps) {
           </svg>
         </div>
         {isHost && connected && <RoomMembers roomId={roomId} />}
+        {isHost && connected && players.some(player => !player.isHost && player.userId) && <section className={styles.scenePlayers} aria-label="Cenas dos jogadores">
+          {players.filter(player => !player.isHost && player.userId).map(player => <label key={player.id}>
+            {player.name || 'Jogador'} · {scenes.find(item => item.id === player.sceneId)?.name || 'Cena inicial'}
+            <select aria-label={`Transferir ${player.name || 'jogador'}`} value={player.sceneId || ''} onChange={event => socketRef.current?.emit('transfer-player-scene', { userId: player.userId, sceneId: event.target.value })}>
+              {scenes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>)}
+        </section>}
 
         {/* Painel editor de token (HP + imagem) */}
         {tokenEditor && (

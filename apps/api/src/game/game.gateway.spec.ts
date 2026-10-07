@@ -14,12 +14,15 @@ describe('GameGateway regressions', () => {
     prisma = {
       subscription: { findUnique: jest.fn().mockResolvedValue(null) },
       room: { count: jest.fn().mockResolvedValue(0), create: jest.fn().mockResolvedValue({}), findUnique: jest.fn(), update: jest.fn().mockResolvedValue({}) },
-      token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}) },
+      token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      scene: { create: jest.fn().mockResolvedValue({}), findFirst: jest.fn().mockResolvedValue({ id: 'initial-ABC123', name: 'Cena inicial', position: 0 }), findUnique: jest.fn().mockResolvedValue({ name: 'Cena inicial', fogData: null }), findMany: jest.fn().mockResolvedValue([{ id: 'initial-ABC123', name: 'Cena inicial', position: 0 }]) },
+      roomSceneAssignment: { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn().mockResolvedValue({}) },
+      $transaction: jest.fn(async callback => callback(prisma)),
       diceRoll: { findMany: jest.fn().mockResolvedValue([]) },
       event: { findMany: jest.fn().mockResolvedValue([]) },
     };
     sessions = { require: jest.fn(), on: jest.fn(), voiceUid: jest.fn().mockReturnValue('allowed-uid') };
-    access = { require: jest.fn() };
+    access = { require: jest.fn(), requireOwner: jest.fn().mockResolvedValue({}) };
     gateway = new GameGateway(prisma, sessions, access, new TestSafetyService(prisma));
     client = { id: 'socket-1', data: {}, handshake: { headers: {} }, emit: jest.fn(), disconnect: jest.fn(), join: jest.fn(), to: jest.fn().mockReturnValue({ emit: jest.fn() }) };
     broadcast = jest.fn();
@@ -49,20 +52,20 @@ describe('GameGateway regressions', () => {
   });
 
   const prepareRoom = () => {
-    const player = { id: client.id, roomId: 'room-a', isHost: true, tokens: [] };
-    const room = { id: 'room-a', tokens: [], players: new Map([[client.id, player]]) };
+    const player: any = { id: client.id, roomId: 'room-a', isHost: true, viewedSceneId: 'initial-room-a', tokens: [] };
+    const room: any = { id: 'room-a', tokens: [], players: new Map([[client.id, player]]) };
     (gateway as any).players.set(client.id, player);
     (gateway as any).rooms.set('room-a', room);
     return { player, room };
   };
 
-  const joinPersistedRoom = async (userId: string, tokenUserId: string) => {
+  const joinPersistedRoom = async (userId: string, tokenUserId: string, sceneId = 'initial-ABC123') => {
     const tokenId = createHash('sha256').update(`ABC123:${tokenUserId}`).digest('hex');
     client.data.session = { id: userId, sid: 'session', name: userId };
     access.require.mockResolvedValue({});
     prisma.room.findUnique.mockResolvedValue({
       id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
-      tokens: [{ id: tokenId, x: 3, y: 4, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
+      tokens: [{ id: tokenId, sceneId, x: 3, y: 4, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
     });
     await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
     const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
@@ -82,7 +85,7 @@ describe('GameGateway regressions', () => {
     expect(createdId).not.toBe(tokenId);
     expect(player.audioPosition).toBeUndefined();
     gateway.handleMoveToken({ tokenId, x: 5, y: 6 }, client);
-    expect(client.to().emit).toHaveBeenCalledWith('token-moved', expect.objectContaining({ tokenId, playerId: tokenId }));
+    expect(broadcast).toHaveBeenCalledWith('token-moved', expect.objectContaining({ tokenId, playerId: tokenId }));
     gateway.handleUpdateAudioPosition({ position: { x: 9, y: 9, z: 0 } }, client);
     expect(player.audioPosition).toBeUndefined();
   });
@@ -96,6 +99,15 @@ describe('GameGateway regressions', () => {
     expect(player.audioPosition).toEqual({ x: 5, y: 6, z: 0 });
   });
 
+  it('restores the assigned scene and ownership of a personal token after restart', async () => {
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'scene-b' });
+    const { tokenId, joined, player } = await joinPersistedRoom('player', 'player', 'scene-b');
+    expect(joined).toMatchObject({ sceneId: 'scene-b', tokens: [{ id: tokenId, sceneId: 'scene-b', playerId: client.id }] });
+    expect(player.tokens[0].id).toBe(tokenId);
+    gateway.handleMoveToken({ tokenId, x: 6, y: 6 }, client);
+    expect(prisma.token.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: tokenId }, data: { x: 6, y: 6 } }));
+  });
+
   it('replays existing voice identities to a late joiner without leaking other rooms', () => {
     prepareRoom();
     client.data.session = { id: 'owner' };
@@ -105,9 +117,9 @@ describe('GameGateway regressions', () => {
     players.set('silent', { roomId: 'room-a' });
     gateway.handleAnnounceAgoraUid({ socketId: 'forged-socket', agoraUid: 'allowed-uid' }, client);
     expect(client.emit.mock.calls).toEqual([
-      ['agora-uid-announced', { socketId: 'early', agoraUid: 'early-uid', isHost: false }],
+      ['agora-uid-announced', { socketId: 'early', agoraUid: 'early-uid', isHost: false, sceneId: undefined }],
     ]);
-    expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid', isHost: true });
+    expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid', isHost: true, sceneId: undefined });
   });
 
   it('does not let a player claim global voice in the Agora announcement', () => {
@@ -115,7 +127,7 @@ describe('GameGateway regressions', () => {
     player.isHost = false;
     client.data.session = { id: 'player' };
     gateway.handleAnnounceAgoraUid({ socketId: client.id, agoraUid: 'allowed-uid', isHost: true } as any, client);
-    expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid', isHost: false });
+    expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid', isHost: false, sceneId: undefined });
   });
 
   it('relays mute state for both the host and a player', () => {
@@ -158,6 +170,9 @@ describe('GameGateway regressions', () => {
 
   it('creates only one token for concurrent clicks and keeps its identity', async () => {
     const { player, room } = prepareRoom();
+    player.isHost = false;
+    (player as any).userId = 'player';
+    (player as any).sceneId = 'initial-room-a';
     let finish!: () => void;
     prisma.token.create.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
     const input = { tokenId: 'first-click', x: 1, y: 2, color: 0 };
@@ -169,5 +184,69 @@ describe('GameGateway regressions', () => {
     expect(prisma.token.create).toHaveBeenCalledTimes(1);
     expect(player.tokens).toHaveLength(1);
     expect(room.tokens).toHaveLength(1);
+  });
+
+  it('lets the host transfer a player and personal token without moving an NPC', async () => {
+    const { player: host, room } = prepareRoom();
+    host.userId = 'owner';
+    const target: any = { id: 'socket-2', userId: 'player', roomId: 'room-a', sceneId: 'initial-room-a', viewedSceneId: 'initial-room-a', isHost: false, tokens: [] };
+    const personalId = createHash('sha256').update('room-a:player').digest('hex');
+    const personal: any = { id: personalId, sceneId: 'initial-room-a', playerId: target.id, x: 2, y: 2 };
+    const npc: any = { id: 'npc', sceneId: 'initial-room-a', playerId: 'npc', x: 4, y: 4 };
+    target.tokens.push(personal);
+    room.tokens.push(personal, npc);
+    room.players.set(target.id, target);
+    (gateway as any).players.set(target.id, target);
+    prisma.scene.findFirst.mockResolvedValue({ id: 'scene-b', name: 'Subsolo', fogData: null });
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'initial-room-a' });
+    access.require.mockResolvedValue({});
+    await gateway.handleTransferPlayerScene({ userId: 'player', sceneId: 'scene-b' }, client);
+    expect(prisma.roomSceneAssignment.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: { sceneId: 'scene-b' } }));
+    expect(prisma.token.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: personalId, roomId: 'room-a' } }));
+    expect(personal).toMatchObject({ sceneId: 'scene-b', playerId: target.id, x: 5, y: 5 });
+    expect(npc).toMatchObject({ sceneId: 'initial-room-a', x: 4, y: 4 });
+    expect(target).toMatchObject({ sceneId: 'scene-b', viewedSceneId: 'scene-b' });
+    expect(broadcast).toHaveBeenCalledWith('scene-changed', expect.objectContaining({ sceneId: 'scene-b', tokens: [personal] }));
+    gateway.handleMoveToken({ tokenId: personalId, x: 6, y: 6 }, { id: target.id } as any);
+    expect(personal).toMatchObject({ x: 6, y: 6 });
+  });
+
+  it('does not let players transfer themselves or others between scenes', async () => {
+    const { player } = prepareRoom();
+    player.isHost = false;
+    await gateway.handleTransferPlayerScene({ userId: 'player', sceneId: 'scene-b' }, client);
+    await gateway.handleViewScene({ sceneId: 'scene-b' }, client);
+    expect(prisma.roomSceneAssignment.upsert).not.toHaveBeenCalled();
+    expect(prisma.scene.findFirst).not.toHaveBeenCalled();
+    expect(player.viewedSceneId).toBe('initial-room-a');
+  });
+
+  it('rechecks room ownership before accepting a scene transfer', async () => {
+    const { player } = prepareRoom();
+    player.userId = 'former-owner';
+    access.requireOwner.mockRejectedValue(new Error('no longer owner'));
+    await gateway.handleTransferPlayerScene({ userId: 'player', sceneId: 'scene-b' }, client);
+    expect(prisma.scene.findFirst).not.toHaveBeenCalled();
+    expect(prisma.roomSceneAssignment.upsert).not.toHaveBeenCalled();
+  });
+
+  it('lets the host look at another scene without transferring players', async () => {
+    const { player, room } = prepareRoom();
+    const target: any = { id: 'socket-2', userId: 'player', sceneId: 'initial-room-a', viewedSceneId: 'initial-room-a', isHost: false };
+    room.players.set(target.id, target);
+    prisma.scene.findFirst.mockResolvedValue({ id: 'scene-b', name: 'Subsolo', fogData: null });
+    await gateway.handleViewScene({ sceneId: 'scene-b' }, client);
+    expect(player.viewedSceneId).toBe('scene-b');
+    expect(target.sceneId).toBe('initial-room-a');
+    expect(prisma.roomSceneAssignment.upsert).not.toHaveBeenCalled();
+    expect(client.emit).toHaveBeenCalledWith('scene-changed', expect.objectContaining({ sceneId: 'scene-b', tokens: [] }));
+  });
+
+  it('persists fog only in the scene viewed by the host', async () => {
+    const { player } = prepareRoom();
+    player.viewedSceneId = 'scene-b';
+    prisma.scene.updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    await gateway.handleFogUpdate({ fogData: new Array(100).fill(false) }, client);
+    expect(prisma.scene.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'scene-b', roomId: 'room-a' } }));
   });
 });
