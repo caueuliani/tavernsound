@@ -6,7 +6,6 @@ import { io } from 'socket.io-client'
 import { useSpatialAudio } from '../hooks/useSpatialAudio'
 import DiceRoller from './DiceRoller'
 import DiceHistory from './DiceHistory'
-import SceneEditor from './SceneEditor'
 import type { Scene } from './SceneEditor'
 import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
@@ -82,7 +81,6 @@ export default function Grid({ roomId }: GridProps) {
   const addTokenRef = useRef<((token: any, own: boolean) => void) | null>(null)
   const [diceRolls, setDiceRolls] = useState<any[]>([])
   const [mapData, setMapData] = useState<string | null>(null)
-  const [hasMap, setHasMap] = useState(false)
   const [scene, setScene] = useState<Scene | null>(null)
   const sceneRef = useRef(scene)
   sceneRef.current = scene
@@ -128,11 +126,6 @@ export default function Grid({ roomId }: GridProps) {
   const handleRollDice = (formula: string, result: number, rolls: number[], modifier: number) => {
     socketRef.current?.emit('roll-dice', { formula, result, rolls, modifier })
   }
-  const handleUploadMap = (mapDataUrl: string, width: number, height: number) => {
-    socketRef.current?.emit('upload-map', { mapData: mapDataUrl, width, height })
-  }
-  const handleRemoveMap = () => socketRef.current?.emit('remove-map', {})
-
   const handleSaveHp = () => {
     if (!tokenEditor || !socketRef.current) return
     socketRef.current.emit('update-token-hp', {
@@ -259,9 +252,8 @@ export default function Grid({ roomId }: GridProps) {
         fogCellsRef.current.forEach((cell, idx) => { cell.visible = !data.fogData[idx] })
       }
 
-      if (data.mapUrl) {
+      if (data.mapUrl && !data.mapUrl.startsWith('db-webp:')) {
         setMapData(data.mapUrl)
-        setHasMap(true)
       }
     })
 
@@ -284,8 +276,8 @@ export default function Grid({ roomId }: GridProps) {
 
     socket.on('dice-rolled', (data: any) => setDiceRolls(prev => [...prev, data]))
 
-    socket.on('map-uploaded', (data: { mapData: string }) => { setMapData(data.mapData); setHasMap(true) })
-    socket.on('map-removed', () => { setMapData(null); setHasMap(false) })
+    socket.on('map-uploaded', (data: { mapData: string }) => setMapData(data.mapData))
+    socket.on('map-removed', () => setMapData(null))
 
     socket.on('fog-updated', (data: { fogData: boolean[] }) => {
       fogDataRef.current = data.fogData
@@ -615,6 +607,24 @@ export default function Grid({ roomId }: GridProps) {
     }
   }, [roomId])
 
+  useEffect(() => {
+    if (!connected || !socketRef.current) return
+    const socket = socketRef.current
+    let disposed = false
+    const applyScene = (value: Scene) => {
+      if (!disposed) setScene(previous => previous && previous.revision > value.revision ? previous : value)
+    }
+    socket.on('scene-updated', applyScene)
+    fetch(apiUrl(`/rooms/${roomId}/scene`), { credentials: 'include', cache: 'no-store' })
+      .then(async response => {
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.message || 'Não foi possível carregar o cenário.')
+        applyScene(data.scene)
+      })
+      .catch(error => { if (!disposed) setRoomError(error.message) })
+    return () => { disposed = true; socket.off('scene-updated', applyScene) }
+  }, [roomId, connected])
+
   // ── Mapa: recarregar quando muda ──────────────────────────────────────────
   useEffect(() => {
     if (!appRef.current || !canvasReady) return
@@ -687,13 +697,20 @@ export default function Grid({ roomId }: GridProps) {
         {roomError && <p role="alert" style={{ color: '#ffb4ab' }}>{roomError}</p>}
         <p><a href={`/room/${roomId}/scene`} style={{ color: '#ffc568' }}>Preparar cenário sem entrar no áudio →</a></p>
         {isHost && connected && <RoomMembers roomId={roomId} />}
-        <SceneEditor roomId={roomId} socket={socketRef.current} connected={connected} isHost={isHost} onChange={setScene}>
-        <div
-          ref={canvasRef}
-          onContextMenu={e => e.preventDefault()}
-          style={{ border: '4px solid #3d2b1f', borderRadius: '4px', display: 'inline-block' }}
-        />
-        </SceneEditor>
+        <div style={{ position: 'relative', width: 508, height: 508 }}>
+          <div
+            ref={canvasRef}
+            onContextMenu={e => e.preventDefault()}
+            style={{ border: '4px solid #3d2b1f', borderRadius: '4px', display: 'inline-block' }}
+          />
+          <svg aria-label="Paredes e portas do cenário" viewBox="0 0 500 500" style={{ position: 'absolute', inset: 4, width: 500, height: 500, pointerEvents: 'none' }}>
+            {scene?.walls.map(wall => <g key={wall.id}>
+              <line x1={wall.x1 * 50} y1={wall.y1 * 50} x2={wall.x2 * 50} y2={wall.y2 * 50} stroke="#120d09" strokeWidth="7" opacity=".8" />
+              <line x1={wall.x1 * 50} y1={wall.y1 * 50} x2={wall.x2 * 50} y2={wall.y2 * 50} stroke={wall.isDoor ? wall.isOpen ? '#64d7a2' : '#ffbf62' : '#a3b4ca'} strokeWidth="3" strokeDasharray={wall.isOpen ? '7 7' : undefined} />
+              {wall.isDoor && <text x={(wall.x1 + wall.x2) * 25 + 5} y={(wall.y1 + wall.y2) * 25 - 5} fill={wall.isOpen ? '#64d7a2' : '#ffbf62'} fontSize="11" stroke="#120d09" strokeWidth="3" paintOrder="stroke">{wall.isOpen ? 'Aberta' : 'Porta'}</text>}
+            </g>)}
+          </svg>
+        </div>
 
         {/* Painel editor de token (HP + imagem) */}
         {tokenEditor && (

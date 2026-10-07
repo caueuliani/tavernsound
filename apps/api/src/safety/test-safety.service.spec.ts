@@ -1,6 +1,7 @@
 import { TestSafetyService } from './test-safety.service';
 import { appEnvironment, requireTester, TEST_LIMITS, testMode } from './test-policy';
 import { budgetDatabase } from './test-database.double';
+import { createHash } from 'crypto';
 
 describe('Beta limits (transaction double)', () => {
   let db: ReturnType<typeof budgetDatabase>;
@@ -92,10 +93,59 @@ describe('Beta limits (transaction double)', () => {
     expect(db.state.participants).toHaveLength(5);
     expect(db.state.reservedMinutes).toBe(0);
   });
-  it('rejects another room and duplicate account connections', async () => {
-    await safety.admit('ABC123', 'owner', 's', 'c');
-    await expect(safety.admit('DEF456', 'other', 's2', 'c2')).rejects.toThrow('Já existe');
-    await expect(safety.admit('ABC123', 'owner', 's2', 'c2')).rejects.toThrow('já está conectada');
+  it('admits participants to rooms A and B simultaneously', async () => {
+    await safety.admit('ABC123', 'owner-a', 'sa', 'ca');
+    await safety.admit('DEF456', 'owner-b', 'sb', 'cb');
+    expect(db.state.participants.map((lease: { roomId: string }) => lease.roomId).sort()).toEqual(['ABC123', 'DEF456']);
+  });
+  it('caps room A at five without consuming room B capacity', async () => {
+    for (let i = 0; i < TEST_LIMITS.participants; i++) await safety.admit('ABC123', `a${i}`, `sa${i}`, `ca${i}`);
+    await expect(safety.admit('ABC123', 'extra', 'sx', 'cx')).rejects.toThrow('cinco participantes');
+    await expect(safety.admit('DEF456', 'b0', 'sb0', 'cb0')).resolves.toBeUndefined();
+  });
+  it('gives room B its own five-participant limit', async () => {
+    await safety.admit('ABC123', 'a0', 'sa0', 'ca0');
+    for (let i = 0; i < TEST_LIMITS.participants; i++) await safety.admit('DEF456', `b${i}`, `sb${i}`, `cb${i}`);
+    await expect(safety.admit('DEF456', 'extra', 'sx', 'cx')).rejects.toThrow('cinco participantes');
+    await expect(safety.admit('ABC123', 'a1', 'sa1', 'ca1')).resolves.toBeUndefined();
+  });
+  it('rejects a duplicate account in the same room but permits that account in another room', async () => {
+    await safety.admit('ABC123', 'owner', 's', 'ca');
+    await expect(safety.admit('ABC123', 'owner', 's2', 'duplicate')).rejects.toThrow('já está conectada');
+    await expect(safety.admit('DEF456', 'owner', 's', 'cb')).resolves.toBeUndefined();
+  });
+  it('keeps room B leases when room A reconnects after a restart', async () => {
+    await safety.admit('ABC123', 'owner-a', 'sa', 'old');
+    await safety.admit('DEF456', 'owner-b', 'sb', 'live');
+    const restarted = new TestSafetyService(db as any);
+    await restarted.admit('ABC123', 'owner-a', 'sa', 'new', new Set(['live', 'new']));
+    expect(db.state.participants.map((lease: { connectionId: string }) => lease.connectionId).sort()).toEqual(['live', 'new']);
+    await expect(restarted.heartbeat('live')).resolves.toBeUndefined();
+  });
+  it('uses only a matching room lease for voice and preserves the global voice budget', async () => {
+    await safety.admit('ABC123', 'owner-a', 'sa', 'ca');
+    await expect(safety.voiceDeadline('DEF456', 'owner-a', 'sa')).rejects.toThrow('Entre na sala');
+    await safety.admit('DEF456', 'owner-b', 'sb', 'cb');
+    await expect(safety.voiceDeadline('DEF456', 'owner-b', 'sb')).resolves.toBe((now + TEST_LIMITS.voiceIntervalMs) / 1000);
+    await expect(safety.voiceDeadline('ABC123', 'owner-a', 'sa')).resolves.toBe((now + TEST_LIMITS.voiceIntervalMs) / 1000);
+    expect(db.state.reservedMinutes).toBe(2);
+  });
+  it('isolates heartbeat and release by connection across rooms', async () => {
+    await safety.admit('ABC123', 'owner-a', 'sa', 'ca');
+    await safety.admit('DEF456', 'owner-b', 'sb', 'cb');
+    now += 30_000;
+    await safety.heartbeat('cb');
+    await safety.release('ca');
+    expect(db.state.participants.map((lease: { connectionId: string }) => lease.connectionId)).toEqual(['cb']);
+    await expect(safety.voiceDeadline('ABC123', 'owner-a', 'sa')).rejects.toThrow('Entre na sala');
+    await expect(safety.heartbeat('cb')).resolves.toBeUndefined();
+    await expect(safety.voiceDeadline('DEF456', 'owner-b', 'sb')).resolves.toBeGreaterThan(0);
+  });
+  it('recognizes active leases saved before room IDs were stored per participant', async () => {
+    db.state.roomId = 'ABC123';
+    db.state.participants = [{ connectionId: 'old', userId: 'owner', sessionHash: createHash('sha256').update('s').digest('hex'), expiresAt: now + TEST_LIMITS.leaseMs }];
+    await expect(safety.voiceDeadline('ABC123', 'owner', 's')).resolves.toBeGreaterThan(0);
+    await expect(safety.voiceDeadline('DEF456', 'owner', 's')).rejects.toThrow('Entre na sala');
   });
   it('reclaims stale leases immediately after restart but keeps live duplicate and participant limits', async () => {
     await safety.admit('ABC123', 'owner', 's', 'old');
