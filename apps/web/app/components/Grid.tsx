@@ -698,7 +698,31 @@ export default function Grid({ roomId }: GridProps) {
     <div className={styles.layout}>
       <div className={styles.tableSection}>
         {roomError && <p role="alert" style={{ color: '#ffb4ab' }}>{roomError}</p>}
-        <p><a href={`/room/${roomId}/scene`} style={{ color: '#ffc568' }}>Preparar cenário sem entrar no áudio →</a></p>
+        <div className={styles.toolbar} aria-label="Controles da mesa">
+          <div className={styles.toolbarStatus}>
+            <span role="status" className={connected ? styles.online : styles.offline}>{connected ? '● Conectado' : '● Desconectado'}</span>
+            <span role="status" className={audioConnected ? styles.audioOnline : styles.audioOffline}>
+              {audioConnected ? '🔊 Áudio ativo' : audioError ? '⚠️ Áudio indisponível' : audioStatus}
+            </span>
+            {testMode && <span className={styles.betaStatus}>Beta · até 5 participantes{testEndsAt && ` · termina ${new Date(testEndsAt).toLocaleTimeString()}`}</span>}
+          </div>
+          <div className={styles.toolbarActions}>
+            {!audioConnected && <button onClick={retryAudio} disabled={!connected}>Conectar áudio</button>}
+            <button onClick={toggleMute} disabled={!audioConnected} aria-label={!audioConnected ? 'Microfone desligado' : isMuted ? 'Ativar microfone' : 'Silenciar microfone'}>
+              {!audioConnected ? '🎤 Desligado' : isMuted ? '🔇 Mudo' : '🎤 Ativo'}
+            </button>
+            {isHost && <button onClick={() => setFogMode(v => !v)} aria-pressed={fogMode}>{fogMode ? '🌫️ Névoa: ON' : '🌫️ Névoa'}</button>}
+            {myOwnToken && <button disabled={uploadingPortrait || !connected} onClick={() => { imageTargetTokenIdRef.current = myOwnToken.id; imageInputRef.current?.click() }}>
+              {uploadingPortrait ? 'Enviando retrato…' : 'Trocar retrato'}
+            </button>}
+            {isHost && <a href={`/room/${roomId}/scene`}>Preparar cenário (sem áudio) →</a>}
+          </div>
+          {(audioError || playbackBlocked || fogMode) && <div className={styles.toolbarNote}>
+            {audioError && <span role="alert">{audioError}</span>}
+            {audioConnected && playbackBlocked && <span>O navegador pausou a reprodução. <button onClick={enablePlayback}>Ativar som</button></span>}
+            {fogMode && <span>Toque nas células para revelar ou ocultar a névoa.</span>}
+          </div>}
+        </div>
         <div className={styles.table}>
           <div
             ref={canvasRef}
@@ -719,7 +743,6 @@ export default function Grid({ roomId }: GridProps) {
             </g>)}
           </svg>
         </div>
-        {isHost && connected && <RoomMembers roomId={roomId} />}
 
         {/* Painel editor de token (HP + imagem) */}
         {tokenEditor && (
@@ -780,59 +803,8 @@ export default function Grid({ roomId }: GridProps) {
           </div>
         )}
 
-        {myOwnToken && <button disabled={uploadingPortrait || !connected} onClick={() => { imageTargetTokenIdRef.current = myOwnToken.id; imageInputRef.current?.click() }} style={{ margin: '12px', padding: '10px' }}>{uploadingPortrait ? 'Enviando retrato…' : 'Trocar retrato do meu personagem'}</button>}
         {/* Input de imagem oculto */}
         <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleImageSelect} style={{ display: 'none' }} />
-
-        {/* Status + controles */}
-        {testMode && (
-          <p role="status" style={{ color: '#d4af37' }}>
-            Beta fechada · até 5 participantes · mapas com armazenamento local.
-            {testEndsAt && ` Esta sessão termina às ${new Date(testEndsAt).toLocaleTimeString()}.`}
-          </p>
-        )}
-        <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'rgba(0,0,0,0.3)', borderRadius: '12px', fontSize: '0.85rem', color: '#888' }}>
-          <p style={{ color: connected ? '#4ecdc4' : '#ff6b6b', margin: '0 0 4px' }}>
-            {connected ? '✅ Conectado' : '❌ Desconectado'}
-            {playerId && ` · ${playerId.slice(0, 8)}…`}
-          </p>
-          <p style={{ color: audioConnected ? '#ff9d00' : '#555', margin: '0 0 8px' }}>
-            {audioConnected ? '🔊 Áudio espacial ativo' : audioError ? '⚠️ Áudio indisponível' : audioStatus}
-          </p>
-          {audioError && <p role="alert" style={{ color: '#ffb4ab' }}>{audioError}</p>}
-          {!audioConnected && <button onClick={retryAudio} disabled={!connected}>Conectar áudio / tentar novamente</button>}
-          {audioConnected && playbackBlocked && (
-            <p role="status">O navegador pausou a reprodução. <button onClick={enablePlayback}>Ativar som neste aparelho</button></p>
-          )}
-
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <button
-              onClick={toggleMute}
-              disabled={!audioConnected}
-              style={{ padding: '0.4rem 0.75rem', background: isMuted ? '#555' : '#ff9d00', color: '#1a0f0a', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}
-            >
-              {!audioConnected ? '🎤 Desligado' : isMuted ? '🔇 Mudo' : '🎤 Ativo'}
-            </button>
-
-            {isHost && (
-              <button
-                onClick={() => setFogMode(v => !v)}
-                style={{ padding: '0.4rem 0.75rem', background: fogMode ? '#3b82f6' : 'transparent', color: fogMode ? '#fff' : '#888', border: '1px solid #444', borderRadius: '8px', cursor: 'pointer', fontSize: '0.8rem' }}
-              >
-                {fogMode ? '🌫️ Névoa: ON' : '🌫️ Névoa'}
-              </button>
-            )}
-          </div>
-
-          {fogMode && (
-            <p style={{ fontSize: '0.72rem', color: '#3b82f6', margin: '6px 0 0' }}>
-              Clique nas células para revelar / ocultar.
-            </p>
-          )}
-          <p style={{ fontSize: '0.72rem', color: '#555', margin: '4px 0 0' }}>
-            Botão direito no token → editar HP / imagem
-          </p>
-        </div>
       </div>
 
       <section className={styles.secondary} data-open={panelsOpen} aria-label="Chat e dados">
@@ -853,6 +825,10 @@ export default function Grid({ roomId }: GridProps) {
           </div>
         </div>
       </section>
+      {isHost && connected && <details className={styles.members}>
+        <summary>Autorizar participantes</summary>
+        <RoomMembers roomId={roomId} />
+      </details>}
     </div>
   )
 }
