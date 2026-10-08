@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TEST_LIMITS, testMode } from './test-policy';
 
-type Lease = { connectionId: string; userId: string; sessionHash: string; expiresAt: number; voiceUntil?: number };
+type Lease = { roomId: string; connectionId: string; userId: string; sessionHash: string; expiresAt: number; voiceUntil?: number };
 type Budget = { id: string; day: string; operations: number; reservedMinutes: number; roomId: string | null; endsAt: Date | null; participants: Prisma.JsonValue };
 
 @Injectable()
@@ -31,7 +31,11 @@ export class TestSafetyService {
 
   private hash(sid: string) { return createHash('sha256').update(sid).digest('hex'); }
   private leases(state: Budget, now: number): Lease[] {
-    return (state.participants as unknown as Lease[]).filter(p => p.expiresAt > now);
+    // Older leases used the budget row's roomId; new leases identify their own room.
+    return (state.participants as unknown as Lease[])
+      .filter(p => p.expiresAt > now)
+      .map(p => ({ ...p, roomId: p.roomId || state.roomId || '' }))
+      .filter(p => !!p.roomId);
   }
 
   // One PostgreSQL row serializes admissions and counters across restarts/instances.
@@ -78,11 +82,10 @@ export class TestSafetyService {
     if (!this.enabled) return;
     return this.locked(async (state, _tx, now) => {
       const leases = this.leases(state, now).filter(p => p.connectionId !== connectionId && (!activeConnections || activeConnections.has(p.connectionId)));
-      if (leases.length && state.roomId !== roomId) throw new ForbiddenException('Já existe uma sala de teste ativa.');
-      if (leases.some(p => p.userId === userId)) throw new ForbiddenException('Esta conta já está conectada. Feche a outra conexão ou aguarde 90 segundos.');
-      if (leases.length >= TEST_LIMITS.participants) throw new ForbiddenException('A sala de testes permite até cinco participantes.');
-      if (!leases.length) state.roomId = roomId;
-      leases.push({ connectionId, userId, sessionHash: this.hash(sid), expiresAt: now + TEST_LIMITS.leaseMs });
+      const roomLeases = leases.filter(p => p.roomId === roomId);
+      if (roomLeases.some(p => p.userId === userId)) throw new ForbiddenException('Esta conta já está conectada. Feche a outra conexão ou aguarde 90 segundos.');
+      if (roomLeases.length >= TEST_LIMITS.participants) throw new ForbiddenException('A sala de testes permite até cinco participantes.');
+      leases.push({ roomId, connectionId, userId, sessionHash: this.hash(sid), expiresAt: now + TEST_LIMITS.leaseMs });
       state.participants = leases;
     });
   }
@@ -109,8 +112,9 @@ export class TestSafetyService {
   async voiceDeadline(roomId: string, userId: string, sid: string): Promise<number> {
     if (!this.enabled) return Number.MAX_SAFE_INTEGER;
     return this.locked(async (state, _tx, now) => {
-      const lease = this.leases(state, now).find(p => p.userId === userId && p.sessionHash === this.hash(sid));
-      if (state.roomId !== roomId || !lease) {
+      const leases = this.leases(state, now);
+      const lease = leases.find(p => p.roomId === roomId && p.userId === userId && p.sessionHash === this.hash(sid));
+      if (!lease) {
         throw new ForbiddenException('Entre na sala durante uma sessão de testes ativa para usar voz.');
       }
       const midnight = Date.parse(new Date(now).toISOString().slice(0, 10)) + 86_400_000;
@@ -120,7 +124,7 @@ export class TestSafetyService {
         }
         state.reservedMinutes++;
         lease.voiceUntil = Math.min(Math.max(now, lease.voiceUntil || now) + TEST_LIMITS.voiceIntervalMs, midnight);
-        state.participants = this.leases(state, now);
+        state.participants = leases;
       }
       const deadline = Math.min(lease.voiceUntil, lease.expiresAt, midnight);
       if (deadline - now <= 30_000) throw new ForbiddenException('A janela de voz desta sessão está terminando.');
