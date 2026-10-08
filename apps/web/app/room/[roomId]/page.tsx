@@ -38,7 +38,7 @@ export default function RoomPage() {
       minHeight: '100vh',
       // Radial gradient combinando com a Home
       background: 'radial-gradient(circle at center, #3d2b1f 0%, #1a0f0a 100%)',
-      padding: '1.5rem',
+      padding: 'clamp(0.75rem, 2vw, 1.5rem)',
     }}>
       <div style={{
         maxWidth: '1200px',
@@ -48,6 +48,8 @@ export default function RoomPage() {
         padding: '0.8rem 1.5rem',
         borderRadius: '16px',
         display: 'flex',
+        flexWrap: 'wrap',
+        gap: '0.75rem',
         justifyContent: 'space-between',
         alignItems: 'center',
         color: '#f4e4bc', // Texto bege rústico
@@ -67,8 +69,8 @@ export default function RoomPage() {
         </div>
 
         {currentUser && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '0.8rem', color: '#f4e4bc' }}>
-            <span style={{ opacity: 0.6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '12px', minWidth: 0, fontSize: '0.8rem', color: '#f4e4bc' }}>
+            <span style={{ opacity: 0.6, overflowWrap: 'anywhere' }}>
               Jogando como <strong style={{ color: '#d4af37' }}>{currentUser.name || currentUser.email}</strong>
             </span>
             <button

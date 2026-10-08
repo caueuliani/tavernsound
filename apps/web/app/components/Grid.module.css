@@ -1,13 +1,54 @@
 .layout {
-  width: min(100%, 75vh, 900px);
+  width: min(100%, clamp(960px, 70vw, 1100px));
   margin-inline: auto;
   display: grid;
-  gap: 1.25rem;
+  gap: 1rem;
   min-width: 0;
   color: #f4e4bc;
 }
 
 .tableSection { min-width: 0; }
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5rem 1rem;
+  padding: .55rem .75rem;
+  margin-bottom: .75rem;
+  background: rgba(26, 15, 10, .7);
+  border: 1px solid #654628;
+  border-radius: 10px;
+  font-size: .82rem;
+}
+.toolbarStatus, .toolbarActions { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem .75rem; min-width: 0; }
+.toolbarStatus { flex: 1 1 280px; }
+.toolbarActions { justify-content: flex-end; }
+.online { color: #4ecdc4; }
+.offline, .audioOffline { color: #ffb4ab; }
+.audioOnline { color: #ffc568; }
+.betaStatus { color: #d4af37; }
+.toolbarActions button, .toolbarNote button, .toolbarActions a {
+  min-height: 36px;
+  padding: .35rem .65rem;
+  color: #ffe4b8;
+  background: #38291e;
+  border: 1px solid #82613c;
+  border-radius: 7px;
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.toolbarActions button:disabled { opacity: .55; cursor: default; }
+.toolbarActions button[aria-pressed="true"] { background: #3b82f6; color: #fff; }
+.toolbarActions a { color: #ffc568; }
+.toolbarNote { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; color: #cbb993; }
+.toolbarNote [role="alert"] { color: #ffb4ab; }
+.toolbarNote button { min-height: 32px; margin-left: .35rem; }
+.members { padding: .5rem .75rem; border: 1px solid #654628; border-radius: 8px; }
+.members summary { cursor: pointer; color: #ffc568; }
 .tableSection > p:first-child { margin-top: 0; }
 .table {
   position: relative;
@@ -40,6 +81,8 @@
 .secondary[data-open="false"] .panels { display: none; }
 .panelToggle {
   min-height: 40px;
+  display: block;
+  margin-left: auto;
   margin-bottom: .75rem;
   padding: .35rem .75rem;
   color: #ffc568;
@@ -50,7 +93,7 @@
 }
 .panels {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   gap: 1rem;
 }
 .panel { min-width: 0; height: 300px; }
@@ -59,7 +102,9 @@
 .tabs { display: none; }
 
 @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
-  .layout { width: min(100%, 90vh); }
+  .layout { width: 100%; }
+  .toolbarActions { justify-content: flex-start; }
+  .toolbarActions button, .toolbarActions a { min-height: 44px; }
   .tabs { display: flex; gap: .5rem; margin-bottom: .75rem; }
   .tabs button {
     flex: 1;
