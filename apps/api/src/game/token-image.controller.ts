@@ -16,9 +16,14 @@ export class TokenImageController {
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024, files: 1, fields: 0, parts: 1 } }))
   async upload(@Param('roomId') roomId: string, @Param('tokenId') tokenId: string, @Req() req: Request, @UploadedFile() file: { buffer: Buffer }) {
     const user = await this.sessions.require(req.headers.cookie);
-    await this.access.require(roomId, user.id);
+    const room = await this.access.require(roomId, user.id);
     const ownId = createHash('sha256').update(`${roomId}:${user.id}`).digest('hex');
-    if (tokenId !== ownId) throw new ForbiddenException('Você não pode alterar a imagem deste token.');
+    const isHost = room.ownerId === user.id;
+    if (!isHost && tokenId !== ownId) throw new ForbiddenException('Você não pode alterar a imagem deste token.');
+    const kind = isHost ? 'SCENERY' : 'PLAYER';
+    const token = await this.prisma.token.findFirst({ where: { id: tokenId, roomId } });
+    if (!token) throw new NotFoundException('Token não encontrado.');
+    if (token.kind !== kind) throw new ForbiddenException('Você não pode alterar a imagem deste token.');
     if (!file?.buffer?.length || file.buffer.length > 2 * 1024 * 1024) throw new BadRequestException('A imagem deve ter no máximo 2 MB.');
     let bytes: Buffer;
     let metadata: sharp.Metadata;
@@ -32,7 +37,7 @@ export class TokenImageController {
       if (bytes.length > 128 * 1024) throw new Error();
     } catch { throw new BadRequestException('Não foi possível processar esta imagem.'); }
     const imageData = `data:image/webp;base64,${bytes.toString('base64')}`;
-    const result = await this.prisma.token.updateMany({ where: { id: tokenId, roomId }, data: { imageUrl: imageData } });
+    const result = await this.prisma.token.updateMany({ where: { id: tokenId, roomId, kind }, data: { imageUrl: imageData } });
     if (result.count !== 1) throw new NotFoundException('Token não encontrado.');
     this.gateway.publishTokenImage(roomId, tokenId, imageData);
     return { tokenId, imageData };

@@ -13,9 +13,9 @@ describe('Character portraits', () => {
   const id = createHash('sha256').update('ABC123:user').digest('hex');
   const req = { headers: { cookie: 'session' } } as any;
   beforeEach(() => {
-    prisma = { token: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) } };
+    prisma = { token: { findFirst: jest.fn().mockResolvedValue({ id, roomId: 'ABC123', kind: 'PLAYER' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) } };
     sessions = { require: jest.fn().mockResolvedValue({ id: 'user' }) };
-    access = { require: jest.fn().mockResolvedValue({}) };
+    access = { require: jest.fn().mockResolvedValue({ ownerId: 'other-user' }) };
     gateway = { publishTokenImage: jest.fn() };
     controller = new TokenImageController(prisma, sessions, access, gateway);
   });
@@ -24,11 +24,36 @@ describe('Character portraits', () => {
     const result = await controller.upload('ABC123', id, req, await file());
     const bytes = Buffer.from(result.imageData.split(',')[1], 'base64');
     expect(await sharp(bytes).metadata()).toMatchObject({ format: 'webp', width: 256, height: 256 });
-    expect(prisma.token.updateMany).toHaveBeenCalledWith({ where: { id, roomId: 'ABC123' }, data: { imageUrl: result.imageData } });
+    expect(prisma.token.updateMany).toHaveBeenCalledWith({ where: { id, roomId: 'ABC123', kind: 'PLAYER' }, data: { imageUrl: result.imageData } });
     expect(gateway.publishTokenImage).toHaveBeenCalledWith('ABC123', id, result.imageData);
   });
   it('rejects another player token before updating', async () => {
     await expect(controller.upload('ABC123', 'foreign', req, await file())).rejects.toThrow('Você não pode alterar a imagem deste token.');
+    expect(prisma.token.updateMany).not.toHaveBeenCalled();
+  });
+  it('lets the room host upload a scenery token image in that room', async () => {
+    access.require.mockResolvedValue({ ownerId: 'user' });
+    prisma.token.findFirst.mockResolvedValue({ id: 'npc-1', roomId: 'ABC123', kind: 'SCENERY' });
+    const result = await controller.upload('ABC123', 'npc-1', req, await file());
+    expect(prisma.token.findFirst).toHaveBeenCalledWith({ where: { id: 'npc-1', roomId: 'ABC123' } });
+    expect(prisma.token.updateMany).toHaveBeenCalledWith({ where: { id: 'npc-1', roomId: 'ABC123', kind: 'SCENERY' }, data: { imageUrl: result.imageData } });
+    expect(gateway.publishTokenImage).toHaveBeenCalledWith('ABC123', 'npc-1', result.imageData);
+  });
+  it('does not let a player upload an NPC image', async () => {
+    await expect(controller.upload('ABC123', 'npc-1', req, await file())).rejects.toThrow('Você não pode alterar a imagem deste token.');
+    expect(prisma.token.findFirst).not.toHaveBeenCalled();
+    expect(prisma.token.updateMany).not.toHaveBeenCalled();
+  });
+  it('does not let the host upload a player token image', async () => {
+    access.require.mockResolvedValue({ ownerId: 'user' });
+    await expect(controller.upload('ABC123', id, req, await file())).rejects.toThrow('Você não pode alterar a imagem deste token.');
+    expect(prisma.token.updateMany).not.toHaveBeenCalled();
+  });
+  it('does not let a host upload an NPC from another room', async () => {
+    access.require.mockResolvedValue({ ownerId: 'user' });
+    prisma.token.findFirst.mockResolvedValue(null);
+    await expect(controller.upload('ABC123', 'other-room-npc', req, await file())).rejects.toThrow('Token não encontrado.');
+    expect(prisma.token.findFirst).toHaveBeenCalledWith({ where: { id: 'other-room-npc', roomId: 'ABC123' } });
     expect(prisma.token.updateMany).not.toHaveBeenCalled();
   });
   it('rejects a token ID from another room, even when that token exists', async () => {
