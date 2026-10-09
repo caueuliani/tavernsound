@@ -16,9 +16,11 @@ import { createHash, randomInt, randomUUID } from 'crypto';
 import { AudioPosition, SpatialAudioSettings, WallData } from './dto/room.dto';
 import { TestSafetyService } from '../safety/test-safety.service';
 import { TEST_LIMITS } from '../safety/test-policy';
+import { sceneryNameOrFallback } from './scenery-token-name';
 
 interface TokenData {
   id: string;
+  kind: 'PLAYER' | 'SCENERY';
   x: number;
   y: number;
   color: number;
@@ -71,6 +73,19 @@ interface RoomData {
   maxHttpBufferSize: 16 * 1024,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
+  publishTokenName(roomId: string, tokenId: string, name: string) {
+    const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
+    if (token) token.playerName = name;
+    this.server.to(roomId).emit('token-name-updated', { tokenId, name });
+  }
+  publishTokenDeleted(roomId: string, tokenId: string) {
+    const room = this.rooms.get(roomId);
+    if (room) {
+      room.tokens = room.tokens.filter(token => token.id !== tokenId);
+      for (const player of room.players.values()) player.tokens = player.tokens.filter(token => token.id !== tokenId);
+    }
+    this.server.to(roomId).emit('token-deleted', { tokenId });
+  }
   publishTokenImage(roomId: string, tokenId: string, imageData: string) {
     const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
     if (token) token.imageUrl = imageData;
@@ -317,11 +332,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       // Tokens do banco usam o próprio id como playerId para garantir chaves únicas no frontend
       const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
         id: t.id,
+        kind: t.kind,
         x: t.x,
         y: t.y,
         color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
         playerId: t.id,
-        playerName: t.id === legacyHostTokenId ? 'Token antigo (sem vínculo)' : t.name,
+        playerName: t.kind === 'SCENERY' ? sceneryNameOrFallback(t.name) : t.id === legacyHostTokenId ? 'Token antigo (sem vínculo)' : t.name,
         hp: t.hp ?? undefined,
         maxHp: t.maxHp ?? undefined,
         imageUrl: t.imageUrl ?? undefined,
@@ -588,16 +604,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const room = this.rooms.get(player.roomId);
     if (!room) return;
 
+    const id = player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex');
     const token: TokenData = {
-      id: player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex'),
+      id,
+      kind: player.isHost ? 'SCENERY' : 'PLAYER',
       x: data.x,
       y: data.y,
       color: data.color,
-      playerId: client.id,
+      playerId: player.isHost ? id : client.id,
       playerName: player.isHost ? 'Token de cenário' : data.playerName || player.name,
     };
 
-    if (player.tokens.length) {
+    if (!player.isHost && player.tokens.length) {
       client.emit('token-created', player.tokens[0]);
       return { ok: true };
     }
@@ -608,6 +626,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         data: {
           id: token.id,
           roomId: player.roomId,
+          kind: token.kind,
           name: token.playerName || 'Token',
           x: data.x,
           y: data.y,

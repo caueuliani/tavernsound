@@ -30,6 +30,7 @@ const TOKEN_COLORS = [
 
 interface Token {
   id: string
+  kind?: 'PLAYER' | 'SCENERY'
   x: number
   y: number
   color: number
@@ -51,6 +52,8 @@ interface Token {
 
 interface TokenEditorState {
   tokenId: string
+  kind?: 'PLAYER' | 'SCENERY'
+  name: string
   isOwn: boolean
   hp: number
   maxHp: number
@@ -100,6 +103,9 @@ export default function Grid({ roomId }: GridProps) {
   const [mobileTab, setMobileTab] = useState<'chat' | 'dice'>('chat')
 
   const [tokenEditor, setTokenEditor] = useState<TokenEditorState | null>(null)
+  const [tokenEditorError, setTokenEditorError] = useState('')
+  const [deletingToken, setDeletingToken] = useState(false)
+  const [savingToken, setSavingToken] = useState(false)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const imageTargetTokenIdRef = useRef('')
 
@@ -141,6 +147,67 @@ export default function Grid({ roomId }: GridProps) {
       maxHp: tokenEditor.maxHp,
     })
     setTokenEditor(null)
+  }
+
+  const updateTokenNameById = (tokenId: string, name: string) => {
+    for (const token of tokensRef.current.values()) {
+      if (token.id !== tokenId) continue
+      token.playerName = name
+      if (token.nameText) token.nameText.text = name
+    }
+  }
+
+  const handleSaveToken = async () => {
+    if (!tokenEditor || !isHost || tokenEditor.kind !== 'SCENERY' || savingToken || !socketRef.current) return
+    const name = tokenEditor.name.trim()
+    if (!name) { setTokenEditorError('Informe um nome para o token.'); return }
+    if (name.length > 80) { setTokenEditorError('O nome deve ter no máximo 80 caracteres.'); return }
+    setSavingToken(true)
+    setTokenEditorError('')
+    try {
+      const response = await fetch(apiUrl(`/rooms/${roomId}/tokens/${tokenEditor.tokenId}`), {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) {
+        const safeMessages = ['Informe um nome para o token.', 'O nome deve ter no máximo 80 caracteres.', 'Você não pode editar este token.', 'Token não encontrado.']
+        setTokenEditorError(safeMessages.includes(result?.message) ? result.message : 'Não foi possível salvar as alterações.')
+        return
+      }
+      if (typeof result?.name !== 'string') { setTokenEditorError('Não foi possível salvar as alterações.'); return }
+      updateTokenNameById(tokenEditor.tokenId, result.name)
+      socketRef.current.emit('update-token-hp', { tokenId: tokenEditor.tokenId, hp: tokenEditor.hp, maxHp: tokenEditor.maxHp })
+      setTokenEditor(null)
+    } catch { setTokenEditorError('Não foi possível salvar as alterações.') }
+    finally { setSavingToken(false) }
+  }
+
+  const removeTokenById = (tokenId: string) => {
+    pendingTokensRef.current = pendingTokensRef.current.filter(token => token.id !== tokenId)
+    for (const [playerId, token] of tokensRef.current) {
+      if (token.id !== tokenId) continue
+      if (dragTargetRef.current?.id === tokenId) dragTargetRef.current = null
+      token.graphics.parent?.removeChild(token.graphics)
+      token.graphics.destroy({ children: true })
+      tokensRef.current.delete(playerId)
+      setTokenCount(tokensRef.current.size)
+    }
+    setTokenEditor(current => current?.tokenId === tokenId ? null : current)
+  }
+
+  const handleDeleteToken = async () => {
+    if (!tokenEditor || !isHost || tokenEditor.kind !== 'SCENERY' || deletingToken) return
+    if (!window.confirm('Deseja excluir este token do cenário?')) return
+    setDeletingToken(true)
+    setTokenEditorError('')
+    try {
+      const tokenId = tokenEditor.tokenId
+      const response = await fetch(apiUrl(`/rooms/${roomId}/tokens/${tokenId}`), { method: 'DELETE', credentials: 'include' })
+      if (response.status === 404) { removeTokenById(tokenId); return }
+      if (!response.ok) { setTokenEditorError(response.status === 403 ? 'Você não pode excluir este token.' : 'Não foi possível excluir o token.'); return }
+      removeTokenById(tokenId)
+    } catch { setTokenEditorError('Não foi possível excluir o token.') }
+    finally { setDeletingToken(false) }
   }
 
   const [uploadingPortrait, setUploadingPortrait] = useState(false)
@@ -402,8 +469,11 @@ export default function Grid({ roomId }: GridProps) {
         // Clique direito: abre editor de HP e imagem
         container.on('rightclick', (event: PIXI.FederatedPointerEvent) => {
           if (isOwn || isHostRef.current) {
+            setTokenEditorError('')
             setTokenEditor({
               tokenId: token.id,
+              kind: token.kind,
+              name: token.playerName || 'Token de cenário',
               isOwn,
               hp: token.hp ?? 0,
               maxHp: token.maxHp ?? 0,
@@ -496,6 +566,10 @@ export default function Grid({ roomId }: GridProps) {
           }
         })
       })
+
+      socket.on('token-name-updated', (data: { tokenId: string; name: string }) => updateTokenNameById(data.tokenId, data.name))
+
+      socket.on('token-deleted', (data: { tokenId: string }) => removeTokenById(data.tokenId))
 
       // Stage input
       app.stage.eventMode = 'static'
@@ -768,6 +842,11 @@ export default function Grid({ roomId }: GridProps) {
               <button onClick={() => setTokenEditor(null)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '1.1rem', lineHeight: 1 }}>✕</button>
             </div>
 
+            {isHost && tokenEditor.kind === 'SCENERY' && <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.8rem' }}>
+              Nome
+              <input type="text" maxLength={80} value={tokenEditor.name} onChange={e => { setTokenEditor(current => current ? { ...current, name: e.target.value } : current); setTokenEditorError('') }} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.3rem', padding: '0.4rem', background: '#0a0508', color: '#f4e4bc', border: '1px solid #82613c', borderRadius: '4px' }} />
+            </label>}
+
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
               {([['HP', 'hp'], ['Máx HP', 'maxHp']] as const).map(([label, field]) => (
                 <div key={field}>
@@ -784,11 +863,19 @@ export default function Grid({ roomId }: GridProps) {
             </div>
 
             <button
-              onClick={handleSaveHp}
+              onClick={isHost && tokenEditor.kind === 'SCENERY' ? handleSaveToken : handleSaveHp}
+              disabled={savingToken}
               style={{ width: '100%', padding: '0.4rem', background: '#ff9d00', color: '#1a0f0a', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', marginBottom: '0.5rem', fontSize: '0.85rem' }}
             >
-              Salvar HP
+              {isHost && tokenEditor.kind === 'SCENERY' ? savingToken ? 'Salvando…' : 'Salvar alterações' : 'Salvar HP'}
             </button>
+
+            {isHost && tokenEditor.kind === 'SCENERY' && <div style={{ borderTop: '1px solid #66482a', marginTop: '0.75rem', paddingTop: '0.75rem' }}>
+              <button onClick={handleDeleteToken} disabled={deletingToken} style={{ width: '100%', padding: '0.4rem', background: 'transparent', color: '#ffb4ab', border: '1px solid #a34747', borderRadius: '6px', fontSize: '0.85rem', cursor: deletingToken ? 'default' : 'pointer' }}>
+                {deletingToken ? 'Excluindo…' : 'Excluir token'}
+              </button>
+            </div>}
+            {tokenEditorError && <p role="alert" style={{ color: '#ffb4ab', fontSize: '0.8rem' }}>{tokenEditorError}</p>}
 
             {tokenEditor.isOwn && !isHost && (
               <button
