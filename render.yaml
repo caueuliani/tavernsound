@@ -1,10 +1,11 @@
-# Free beta only. No managed database, paid instance, or automatic deploy.
+# Free beta only. Deploy from main after database migrations are applied.
 services:
   - type: web
     name: tavernsound-beta
     runtime: node
     plan: free
-    autoDeployTrigger: off
+    branch: main
+    autoDeployTrigger: commit
     buildCommand: npm ci --include=dev --ignore-scripts && npm run db:generate && npm run build
     startCommand: npm start
     healthCheckPath: /login

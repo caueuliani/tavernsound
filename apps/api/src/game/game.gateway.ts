@@ -13,10 +13,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SessionService } from '../auth/session.service';
 import { RoomAccessService } from './room-access.service';
 import { createHash, randomInt, randomUUID } from 'crypto';
-import { AudioPosition, SpatialAudioSettings, WallData } from './dto/room.dto';
+import { AudioPosition, SpatialAudioSettings } from './dto/room.dto';
 import { TestSafetyService } from '../safety/test-safety.service';
 import { TEST_LIMITS } from '../safety/test-policy';
 import { sceneryNameOrFallback } from './scenery-token-name';
+import { readScene } from './scene.util';
+import type { SceneWall } from './scene.util';
+import { movementSegments, tokenCenter, tokenSize, validTokenMove, validTokenPosition } from './token-movement';
 
 interface TokenData {
   id: string;
@@ -29,6 +32,7 @@ interface TokenData {
   hp?: number;
   maxHp?: number;
   imageUrl?: string;
+  size?: number;
   audioEmitter?: boolean;
   audioUrl?: string;
 }
@@ -57,7 +61,8 @@ interface RoomData {
   fogData?: boolean[];
   mapUrl?: string;
   ownerId?: string | null;
-  walls?: WallData[];
+  walls?: SceneWall[];
+  gridSize?: number;
   spatialAudioSettings?: SpatialAudioSettings;
 }
 
@@ -77,6 +82,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
     if (token) token.playerName = name;
     this.server.to(roomId).emit('token-name-updated', { tokenId, name });
+  }
+  publishTokenSize(roomId: string, tokenId: string, size: number) {
+    const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
+    if (token) token.size = size;
+    this.server.to(roomId).emit('token-size-updated', { tokenId, size });
   }
   publishTokenDeleted(roomId: string, tokenId: string) {
     const room = this.rooms.get(roomId);
@@ -98,7 +108,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   }
   publishScene(roomId: string, scene: any) {
     const room = this.rooms.get(roomId);
-    if (room) room.walls = scene.walls;
+    if (room) { room.walls = scene.walls; room.gridSize = scene.settings?.gridSize ?? 10; }
     this.server.to(roomId).emit('scene-updated', scene);
   }
   @WebSocketServer()
@@ -270,6 +280,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       tokens: [],
       ownerId: session?.id ?? null,
       walls: [],
+      gridSize: 10,
       spatialAudioSettings: {
         maxDistance: 1000,
         attenuationFactor: 1,
@@ -330,6 +341,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         ? createHash('sha256').update(`${data.roomId}:${dbRoom.ownerId}`).digest('hex')
         : null;
       // Tokens do banco usam o próprio id como playerId para garantir chaves únicas no frontend
+      const restoredScene = readScene(dbRoom.sceneData);
       const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
         id: t.id,
         kind: t.kind,
@@ -341,6 +353,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         hp: t.hp ?? undefined,
         maxHp: t.maxHp ?? undefined,
         imageUrl: t.imageUrl ?? undefined,
+        size: tokenSize(t.sizeMultiplier),
       }));
 
       room = {
@@ -352,7 +365,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         fogData: Array.isArray(dbRoom.fogOfWarData) ? (dbRoom.fogOfWarData as boolean[]) : undefined,
         mapUrl: dbRoom.mapUrl?.startsWith('db-webp:') ? undefined : dbRoom.mapUrl ?? undefined,
         ownerId: dbRoom.ownerId,
-        walls: [],
+        walls: restoredScene.walls,
+        gridSize: restoredScene.settings.gridSize,
         spatialAudioSettings: {
           maxDistance: 1000,
           attenuationFactor: 1,
@@ -613,11 +627,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       color: data.color,
       playerId: player.isHost ? id : client.id,
       playerName: player.isHost ? 'Token de cenário' : data.playerName || player.name,
+      size: 1,
     };
 
     if (!player.isHost && player.tokens.length) {
       client.emit('token-created', player.tokens[0]);
       return { ok: true };
+    }
+    if (!Number.isInteger(data.x) || !Number.isInteger(data.y) || !validTokenPosition(tokenCenter(data.x, data.y), 1, room.gridSize ?? 10, movementSegments(room.walls ?? []))) {
+      client.emit('room-error', { message: 'Posição indisponível para criar o token.' });
+      return { ok: false };
     }
     if (player.creatingToken) return { ok: false };
     player.creatingToken = true;
@@ -662,6 +681,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const token = player.tokens.find(t => t.id === data.tokenId) ??
       (player.isHost ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id) : undefined);
     if (!token) return;
+
+    const segments = movementSegments(room.walls ?? []);
+    if (!Number.isInteger(data.x) || !Number.isInteger(data.y) ||
+      !validTokenMove(tokenCenter(token.x, token.y), tokenCenter(data.x, data.y), token.size, room.gridSize ?? 10, segments)) {
+      client.emit('token-moved', { tokenId: token.id, x: token.x, y: token.y, playerId: token.playerId });
+      return;
+    }
 
     token.x = data.x;
     token.y = data.y;

@@ -56,13 +56,14 @@ describe('GameGateway regressions', () => {
     return { player, room };
   };
 
-  const joinPersistedRoom = async (userId: string, tokenUserId: string) => {
+  const joinPersistedRoom = async (userId: string, tokenUserId: string, size = 1, sceneData: any = null) => {
     const tokenId = createHash('sha256').update(`ABC123:${tokenUserId}`).digest('hex');
     client.data.session = { id: userId, sid: 'session', name: userId };
     access.require.mockResolvedValue({});
     prisma.room.findUnique.mockResolvedValue({
       id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
-      tokens: [{ id: tokenId, kind: 'PLAYER', x: 3, y: 4, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
+      sceneData,
+      tokens: [{ id: tokenId, kind: 'PLAYER', x: 3, y: 4, sizeMultiplier: size, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
     });
     await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
     const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
@@ -170,6 +171,28 @@ describe('GameGateway regressions', () => {
     expect(prisma.token.create).toHaveBeenCalledTimes(1);
     expect(player.tokens).toHaveLength(1);
     expect(room.tokens).toHaveLength(1);
+  });
+  it('restores size and rejects wall crossing without persisting or broadcasting', async () => {
+    const { tokenId, joined } = await joinPersistedRoom('player', 'player', 2);
+    expect(joined.tokens[0]).toMatchObject({ size: 2, x: 3, y: 4, playerId: client.id });
+    const room = (gateway as any).rooms.get('ABC123');
+    room.walls = [{ id: 'wall', x1: 5, y1: 0, x2: 5, y2: 10, isDoor: false, isOpen: false, blocksAudio: true }];
+    room.gridSize = 10;
+    gateway.handleMoveToken({ tokenId, x: 6, y: 4 }, client);
+    expect(prisma.token.update).not.toHaveBeenCalled();
+    expect(client.emit).toHaveBeenCalledWith('token-moved', { tokenId, x: 3, y: 4, playerId: client.id });
+    expect(client.to().emit).not.toHaveBeenCalledWith('token-moved', expect.anything());
+    gateway.handleMoveToken({ tokenId, x: 3, y: 5 }, client);
+    expect(prisma.token.update).toHaveBeenCalledWith({ where: { id: tokenId }, data: { x: 3, y: 5 } });
+  });
+
+  it('restores scene geometry and grid size before admitting movement after restart', async () => {
+    const wall = { id: 'wall', x1: 5, y1: 0, x2: 5, y2: 10, isDoor: false, isOpen: false, blocksAudio: true };
+    const sceneData = { revision: 1, map: null, settings: { scale: 1, x: 0, y: 0, gridOpacity: .3, gridSize: 20 }, walls: [wall] };
+    const { tokenId } = await joinPersistedRoom('player', 'player', 1, sceneData);
+    expect((gateway as any).rooms.get('ABC123')).toMatchObject({ gridSize: 20, walls: [wall] });
+    gateway.handleMoveToken({ tokenId, x: 6, y: 4 }, client);
+    expect(prisma.token.update).not.toHaveBeenCalled();
   });
 
   it('restores a persisted NPC after refresh with scenery kind and a stable visual key', async () => {

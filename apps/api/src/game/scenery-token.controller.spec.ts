@@ -8,13 +8,13 @@ describe('Scenery token deletion', () => {
 
   beforeEach(() => {
     prisma = { token: {
-      findFirst: jest.fn().mockResolvedValue({ id: 'npc', roomId: 'ABC123', kind: 'SCENERY' }),
+      findFirst: jest.fn().mockResolvedValue({ id: 'npc', roomId: 'ABC123', kind: 'SCENERY', x: 4, y: 4 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     } };
     sessions = { require: jest.fn().mockResolvedValue({ id: 'owner' }) };
     access = { requireOwner: jest.fn().mockResolvedValue({ id: 'ABC123', ownerId: 'owner' }) };
-    gateway = { publishTokenDeleted: jest.fn(), publishTokenName: jest.fn() };
+    gateway = { publishTokenDeleted: jest.fn(), publishTokenName: jest.fn(), publishTokenSize: jest.fn() };
     controller = new SceneryTokenController(prisma, sessions, access, gateway);
   });
 
@@ -62,6 +62,19 @@ describe('Scenery token deletion', () => {
     expect(access.requireOwner).toHaveBeenCalledWith('ABC123', 'owner');
     expect(prisma.token.updateMany).toHaveBeenCalledWith({ where: { id: 'npc', roomId: 'ABC123', kind: 'SCENERY' }, data: { name: 'Ferreiro' } });
     expect(gateway.publishTokenName).toHaveBeenCalledWith('ABC123', 'npc', 'Ferreiro');
+  });
+  it('persists and broadcasts an allowed NPC size, without changing player tokens', async () => {
+    await expect(controller.rename('ABC123', 'npc', req, { name: 'Ferreiro', size: 2 })).resolves.toEqual({ tokenId: 'npc', name: 'Ferreiro', size: 2 });
+    expect(prisma.token.updateMany).toHaveBeenCalledWith({ where: { id: 'npc', roomId: 'ABC123', kind: 'SCENERY' }, data: { name: 'Ferreiro', sizeMultiplier: 2 } });
+    expect(gateway.publishTokenSize).toHaveBeenCalledWith('ABC123', 'npc', 2);
+    prisma.token.findFirst.mockResolvedValue({ id: 'player', roomId: 'ABC123', kind: 'PLAYER', x: 4, y: 4 });
+    await expect(controller.rename('ABC123', 'player', req, { name: 'Player', size: 2 })).rejects.toThrow('Você não pode editar este token.');
+  });
+  it('rejects invalid sizes or a size overlapping the map boundary', async () => {
+    for (const size of [0, .75, 5, '2']) await expect(controller.rename('ABC123', 'npc', req, { name: 'NPC', size })).rejects.toThrow('Tamanho de token inválido.');
+    prisma.token.findFirst.mockResolvedValue({ id: 'npc', roomId: 'ABC123', kind: 'SCENERY', x: 0, y: 0 });
+    await expect(controller.rename('ABC123', 'npc', req, { name: 'NPC', size: 2 })).rejects.toThrow('Este tamanho não cabe');
+    expect(gateway.publishTokenSize).not.toHaveBeenCalled();
   });
 
   it('rejects blank, overlong and control-character names without writing', async () => {

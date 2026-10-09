@@ -13,6 +13,7 @@ import { apiUrl, socketUrl } from '../lib/api-url'
 import { TOKEN_IMAGE_FALLBACK, tokenImageError } from '../lib/token-image-error'
 import { openingBounds, pointOnWall, solidSegments } from '../lib/scene-geometry'
 import { DEFAULT_GRID_SIZE, gridLinePositions } from '../lib/scene-grid'
+import { lastValidTokenCell, movementSegments, TOKEN_SIZES, tokenCenter, tokenHudLayout, tokenRadius, tokenSize, validTokenMove, validTokenPosition } from '../lib/token-movement'
 import styles from './Grid.module.css'
 
 const GRID_SIZE = 500
@@ -23,6 +24,7 @@ const TOKEN_RADIUS = 20
 const AMBER = 0xff9d00
 const WOOD_DARK = 0x1a0f0a
 const WOOD_WARM = 0x3d2b1f
+const displayTokenName = (name: string) => name.length > 20 ? `${name.slice(0, 19)}…` : name
 
 const TOKEN_COLORS = [
   0xff9d00, 0xd4af37, 0xe67e22, 0xa35d1e, 0xf1c40f, 0xc0392b,
@@ -45,6 +47,8 @@ interface Token {
   hp?: number
   maxHp?: number
   imageUrl?: string
+  size?: number
+  bodyGraphic?: PIXI.Container
   portraitSprite?: PIXI.Sprite
   portraitMask?: PIXI.Graphics
   portraitRequest?: number
@@ -57,6 +61,7 @@ interface TokenEditorState {
   isOwn: boolean
   hp: number
   maxHp: number
+  size: number
   x: number
   y: number
 }
@@ -70,6 +75,8 @@ export default function Grid({ roomId }: GridProps) {
   const appRef = useRef<PIXI.Application | null>(null)
   const tokensRef = useRef<Map<string, Token>>(new Map())
   const dragTargetRef = useRef<Token | null>(null)
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressStartRef = useRef<{ x: number; y: number } | null>(null)
   const socketRef = useRef<any>(null)
 
   const [tokenCount, setTokenCount] = useState(0)
@@ -153,7 +160,7 @@ export default function Grid({ roomId }: GridProps) {
     for (const token of tokensRef.current.values()) {
       if (token.id !== tokenId) continue
       token.playerName = name
-      if (token.nameText) token.nameText.text = name
+      if (token.nameText) token.nameText.text = displayTokenName(name)
     }
   }
 
@@ -166,16 +173,17 @@ export default function Grid({ roomId }: GridProps) {
     setTokenEditorError('')
     try {
       const response = await fetch(apiUrl(`/rooms/${roomId}/tokens/${tokenEditor.tokenId}`), {
-        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, size: tokenEditor.size }),
       })
       const result = await response.json().catch(() => null)
       if (!response.ok) {
-        const safeMessages = ['Informe um nome para o token.', 'O nome deve ter no máximo 80 caracteres.', 'Você não pode editar este token.', 'Token não encontrado.']
+        const safeMessages = ['Informe um nome para o token.', 'O nome deve ter no máximo 80 caracteres.', 'Você não pode editar este token.', 'Token não encontrado.', 'Tamanho de token inválido.', 'Este tamanho não cabe na posição atual do token.']
         setTokenEditorError(safeMessages.includes(result?.message) ? result.message : 'Não foi possível salvar as alterações.')
         return
       }
       if (typeof result?.name !== 'string') { setTokenEditorError('Não foi possível salvar as alterações.'); return }
       updateTokenNameById(tokenEditor.tokenId, result.name)
+      if (typeof result.size === 'number') updateTokenSizeById(tokenEditor.tokenId, result.size)
       socketRef.current.emit('update-token-hp', { tokenId: tokenEditor.tokenId, hp: tokenEditor.hp, maxHp: tokenEditor.maxHp })
       setTokenEditor(null)
     } catch { setTokenEditorError('Não foi possível salvar as alterações.') }
@@ -211,6 +219,11 @@ export default function Grid({ roomId }: GridProps) {
   }
 
   const [uploadingPortrait, setUploadingPortrait] = useState(false)
+  const clearLongPress = () => {
+    if (longPressRef.current) clearTimeout(longPressRef.current)
+    longPressRef.current = null
+    longPressStartRef.current = null
+  }
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     const tokenId = imageTargetTokenIdRef.current
@@ -234,6 +247,18 @@ export default function Grid({ roomId }: GridProps) {
     finally { setUploadingPortrait(false) }
   }
   // Redesenha a barra de HP de um token no PixiJS
+  const tokenPixelRadius = (token: Token) => tokenRadius(token.size, sceneRef.current?.settings.gridSize ?? DEFAULT_GRID_SIZE) * CELL_SIZE
+  const updateTokenSizeById = (tokenId: string, size: number) => {
+    for (const token of tokensRef.current.values()) {
+      if (token.id !== tokenId) continue
+      token.size = tokenSize(size)
+      const { radius, nameY } = tokenHudLayout(token.size, sceneRef.current?.settings.gridSize ?? DEFAULT_GRID_SIZE, GRID_SIZE)
+      token.bodyGraphic?.scale.set(radius / TOKEN_RADIUS)
+      if (token.graphics) token.graphics.hitArea = new PIXI.Circle(0, 0, Math.max(12, radius))
+      if (token.nameText) token.nameText.y = nameY
+      renderHpBar(token)
+    }
+  }
   const renderHpBar = (token: Token) => {
     if (!token.hpBar) return
     token.hpBar.clear()
@@ -241,10 +266,9 @@ export default function Grid({ roomId }: GridProps) {
 
     token.hpBar.visible = true
     const ratio = Math.max(0, Math.min(1, (token.hp ?? 0) / token.maxHp))
-    const barW = TOKEN_RADIUS * 2
+    const { hpWidth: barW, hpY: by } = tokenHudLayout(token.size, sceneRef.current?.settings.gridSize ?? DEFAULT_GRID_SIZE, GRID_SIZE)
     const barH = 5
-    const bx = -TOKEN_RADIUS
-    const by = TOKEN_RADIUS + 28
+    const bx = -barW / 2
     const color = ratio > 0.5 ? 0x2ecc71 : ratio > 0.2 ? 0xf39c12 : 0xe74c3c
 
     token.hpBar.rect(bx, by, barW, barH).fill(0x222222)
@@ -268,8 +292,9 @@ export default function Grid({ roomId }: GridProps) {
       const mask = new PIXI.Graphics()
       mask.circle(0, 0, TOKEN_RADIUS).fill(0xffffff)
       sprite.mask = mask
-      container.addChild(mask)
-      container.addChild(sprite)
+      const body = token.bodyGraphic || container
+      body.addChild(mask)
+      body.addChild(sprite)
       token.portraitSprite = sprite
       token.portraitMask = mask
       if (token.circleGraphic) token.circleGraphic.visible = false
@@ -431,6 +456,10 @@ export default function Grid({ roomId }: GridProps) {
 
       const createTokenGraphics = (token: Token, isOwn: boolean) => {
         const container = new PIXI.Container()
+        const body = new PIXI.Container()
+        token.bodyGraphic = body
+        const radius = tokenPixelRadius(token)
+        body.scale.set(radius / TOKEN_RADIUS)
 
         const speakingIndicator = new PIXI.Graphics()
         speakingIndicator.circle(0, 0, TOKEN_RADIUS + 13).fill({ color: AMBER, alpha: 0.14 })
@@ -445,29 +474,32 @@ export default function Grid({ roomId }: GridProps) {
         token.circleGraphic = circle
 
         const nameText = new PIXI.Text({
-          text: token.playerName || 'Unknown',
+          text: displayTokenName(token.playerName || 'Unknown'),
           style: { fontFamily: 'Arial', fontSize: 10, fill: 0xffffff, align: 'center', stroke: { color: 0x000000, width: 2 } },
         })
         nameText.anchor.set(0.5)
-        nameText.y = TOKEN_RADIUS + 15
+        nameText.y = tokenHudLayout(token.size, sceneRef.current?.settings.gridSize ?? DEFAULT_GRID_SIZE, GRID_SIZE).nameY
+        nameText.eventMode = 'none'
         token.nameText = nameText
 
         const hpBar = new PIXI.Graphics()
         hpBar.visible = false
+        hpBar.eventMode = 'none'
         token.hpBar = hpBar
 
-        container.addChild(speakingIndicator)
-        container.addChild(circle)
+        body.addChild(speakingIndicator)
+        body.addChild(circle)
+        container.addChild(body)
         container.addChild(nameText)
         container.addChild(hpBar)
         container.x = gridToPixel(token.x)
         container.y = gridToPixel(token.y)
         container.eventMode = 'static'
+        container.hitArea = new PIXI.Circle(0, 0, Math.max(12, radius))
 
         if (token.imageUrl) applyTokenImage(token, container)
 
-        // Clique direito: abre editor de HP e imagem
-        container.on('rightclick', (event: PIXI.FederatedPointerEvent) => {
+        const openEditor = (x: number, y: number) => {
           if (isOwn || isHostRef.current) {
             setTokenEditorError('')
             setTokenEditor({
@@ -477,10 +509,16 @@ export default function Grid({ roomId }: GridProps) {
               isOwn,
               hp: token.hp ?? 0,
               maxHp: token.maxHp ?? 0,
-              x: event.client.x,
-              y: event.client.y,
+              size: tokenSize(token.size),
+              x, y,
             })
           }
+        }
+
+        // Right-click on desktop; long press on touch screens.
+        container.on('rightclick', (event: PIXI.FederatedPointerEvent) => {
+          clearLongPress()
+          openEditor(event.client.x, event.client.y)
         })
 
         if (isOwn || isHostRef.current) {
@@ -489,16 +527,26 @@ export default function Grid({ roomId }: GridProps) {
             event.stopPropagation()
             dragTargetRef.current = token
             app.stage.cursor = 'grabbing'
+            if (event.pointerType === 'touch') {
+              clearLongPress()
+              longPressStartRef.current = { x: event.global.x, y: event.global.y }
+              const { x, y } = event.client
+              longPressRef.current = setTimeout(() => {
+                dragTargetRef.current = null
+                token.graphics.position.set(gridToPixel(token.x), gridToPixel(token.y))
+                app.stage.cursor = 'default'
+                openEditor(x, y)
+                clearLongPress()
+              }, 600)
+            }
           })
         }
 
         container.on('pointerover', () => {
           container.cursor = 'pointer'
-          nameText.style.fontSize = 12
           nameText.style.fill = 0x4ecdc4
         })
         container.on('pointerout', () => {
-          nameText.style.fontSize = 10
           nameText.style.fill = 0xffffff
         })
 
@@ -533,11 +581,12 @@ export default function Grid({ roomId }: GridProps) {
 
       socket.on('token-moved', (data: { tokenId: string; x: number; y: number; playerId: string }) => {
         const token = tokensRef.current.get(data.playerId)
-        if (token && token.playerId !== socket.id) {
+        if (token) {
           token.x = data.x
           token.y = data.y
           token.graphics.x = gridToPixel(data.x)
           token.graphics.y = gridToPixel(data.y)
+          if (token.isOwn && !isHostRef.current) setMyOwnToken({ ...token })
           updateSpatialAudio()
         }
       })
@@ -568,6 +617,7 @@ export default function Grid({ roomId }: GridProps) {
       })
 
       socket.on('token-name-updated', (data: { tokenId: string; name: string }) => updateTokenNameById(data.tokenId, data.name))
+      socket.on('token-size-updated', (data: { tokenId: string; size: number }) => updateTokenSizeById(data.tokenId, data.size))
 
       socket.on('token-deleted', (data: { tokenId: string }) => removeTokenById(data.tokenId))
 
@@ -594,18 +644,23 @@ export default function Grid({ roomId }: GridProps) {
           return
         }
 
-        const isOccupied = Array.from(tokensRef.current.values()).some(t => t.x === gridX && t.y === gridY)
-        if (!isOccupied && gridX >= 0 && gridX < GRID_CELLS && gridY >= 0 && gridY < GRID_CELLS) {
+        if (gridX >= 0 && gridX < GRID_CELLS && gridY >= 0 && gridY < GRID_CELLS) {
           const own = tokensRef.current.get(socket.id || '')
+          const segments = movementSegments(sceneRef.current?.walls ?? [])
+          const gridSize = sceneRef.current?.settings.gridSize ?? DEFAULT_GRID_SIZE
           if (own) {
-            own.x = gridX
-            own.y = gridY
-            own.graphics.position.set(gridToPixel(gridX), gridToPixel(gridY))
+            const destination = lastValidTokenCell(own, { x: gridX, y: gridY }, own.size, gridSize, segments, (x, y) => Array.from(tokensRef.current.values()).some(t => t !== own && t.x === x && t.y === y))
+            if (destination.x === own.x && destination.y === own.y) return
+            own.x = destination.x
+            own.y = destination.y
+            own.graphics.position.set(gridToPixel(destination.x), gridToPixel(destination.y))
             if (!isHostRef.current) setMyOwnToken({ ...own })
-            socket.emit('move-token', { tokenId: own.id, x: gridX, y: gridY })
+            socket.emit('move-token', { tokenId: own.id, x: destination.x, y: destination.y })
             return
           }
+          if (Array.from(tokensRef.current.values()).some(t => t.x === gridX && t.y === gridY)) return
           if (creatingTokenRef.current) return
+          if (!validTokenPosition(tokenCenter(gridX, gridY), 1, gridSize, segments)) return
           creatingTokenRef.current = true
           const tokenId = `${socket.id}-${Date.now()}`
           const color = TOKEN_COLORS[tokensRef.current.size % TOKEN_COLORS.length]
@@ -618,12 +673,19 @@ export default function Grid({ roomId }: GridProps) {
 
       app.stage.on('pointermove', (event: PIXI.FederatedPointerEvent) => {
         if (dragTargetRef.current) {
-          dragTargetRef.current.graphics.x = event.global.x
-          dragTargetRef.current.graphics.y = event.global.y
+          if (longPressStartRef.current && Math.hypot(event.global.x - longPressStartRef.current.x, event.global.y - longPressStartRef.current.y) > 8) clearLongPress()
+          const token = dragTargetRef.current
+          const segments = movementSegments(sceneRef.current?.walls ?? [])
+          const gridSize = sceneRef.current?.settings.gridSize ?? DEFAULT_GRID_SIZE
+          if (validTokenMove(tokenCenter(token.x, token.y), { x: event.global.x / CELL_SIZE, y: event.global.y / CELL_SIZE }, token.size, gridSize, segments)) {
+            token.graphics.x = event.global.x
+            token.graphics.y = event.global.y
+          }
         }
       })
 
       app.stage.on('pointerup', () => {
+        clearLongPress()
         if (dragTargetRef.current) {
           const token = dragTargetRef.current
           const gridX = pixelToGrid(token.graphics.x)
@@ -631,17 +693,17 @@ export default function Grid({ roomId }: GridProps) {
           const cx = Math.max(0, Math.min(GRID_CELLS - 1, gridX))
           const cy = Math.max(0, Math.min(GRID_CELLS - 1, gridY))
 
-          const occupied = Array.from(tokensRef.current.values()).find(t => t !== token && t.x === cx && t.y === cy)
-          if (occupied) {
+          const destination = lastValidTokenCell(token, { x: cx, y: cy }, token.size, sceneRef.current?.settings.gridSize ?? DEFAULT_GRID_SIZE, movementSegments(sceneRef.current?.walls ?? []), (x, y) => Array.from(tokensRef.current.values()).some(t => t !== token && t.x === x && t.y === y))
+          if (destination.x === token.x && destination.y === token.y) {
             token.graphics.x = gridToPixel(token.x)
             token.graphics.y = gridToPixel(token.y)
           } else {
-            token.x = cx
-            token.y = cy
-            token.graphics.x = gridToPixel(cx)
-            token.graphics.y = gridToPixel(cy)
+            token.x = destination.x
+            token.y = destination.y
+            token.graphics.x = gridToPixel(destination.x)
+            token.graphics.y = gridToPixel(destination.y)
             if (token.isOwn && !isHostRef.current) setMyOwnToken({ ...token })
-            socket.emit('move-token', { tokenId: token.id, x: cx, y: cy })
+            socket.emit('move-token', { tokenId: token.id, x: destination.x, y: destination.y })
           }
 
           dragTargetRef.current = null
@@ -650,6 +712,7 @@ export default function Grid({ roomId }: GridProps) {
       })
 
       app.stage.on('pointerupoutside', () => {
+        clearLongPress()
         if (dragTargetRef.current) {
           const token = dragTargetRef.current
           token.graphics.x = gridToPixel(token.x)
@@ -679,6 +742,7 @@ export default function Grid({ roomId }: GridProps) {
     void initPixi().then(() => setCanvasReady(true))
 
     return () => {
+      clearLongPress()
       addTokenRef.current = null
       socketRef.current?.disconnect()
       socketRef.current = null
@@ -766,6 +830,7 @@ export default function Grid({ roomId }: GridProps) {
       grid.moveTo(0, position).lineTo(GRID_SIZE, position)
     }
     grid.stroke({ width: 1, color: 0xb8a88a, alpha: scene.settings.gridOpacity })
+    for (const token of tokensRef.current.values()) updateTokenSizeById(token.id, token.size ?? 1)
   }, [canvasReady, scene?.settings])
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -861,6 +926,13 @@ export default function Grid({ roomId }: GridProps) {
                 </div>
               ))}
             </div>
+
+            {isHost && tokenEditor.kind === 'SCENERY' && <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.8rem' }}>
+              Tamanho em células
+              <select value={tokenEditor.size} onChange={e => { setTokenEditor(current => current ? { ...current, size: Number(e.target.value) } : current); setTokenEditorError('') }} style={{ display: 'block', width: '100%', marginTop: '0.3rem', padding: '0.4rem', background: '#0a0508', color: '#f4e4bc', border: '1px solid #82613c', borderRadius: '4px' }}>
+                {TOKEN_SIZES.map(size => <option key={size} value={size}>{size}x</option>)}
+              </select>
+            </label>}
 
             <button
               onClick={isHost && tokenEditor.kind === 'SCENERY' ? handleSaveToken : handleSaveHp}
