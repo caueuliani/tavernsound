@@ -18,19 +18,22 @@ export class TokenImageController {
     const user = await this.sessions.require(req.headers.cookie);
     await this.access.require(roomId, user.id);
     const ownId = createHash('sha256').update(`${roomId}:${user.id}`).digest('hex');
-    if (tokenId !== ownId) throw new ForbiddenException('Você só pode alterar o retrato do seu personagem nesta sala.');
-    if (!file?.buffer?.length || file.buffer.length > 2 * 1024 * 1024) throw new BadRequestException('Selecione uma imagem de até 2 MB.');
+    if (tokenId !== ownId) throw new ForbiddenException('Você não pode alterar a imagem deste token.');
+    if (!file?.buffer?.length || file.buffer.length > 2 * 1024 * 1024) throw new BadRequestException('A imagem deve ter no máximo 2 MB.');
     let bytes: Buffer;
+    let metadata: sharp.Metadata;
     try {
-      const image = sharp(file.buffer, { limitInputPixels: 16777216 });
-      const metadata = await image.metadata();
-      if (!['png', 'jpeg', 'webp'].includes(metadata.format || '') || (metadata.pages || 1) !== 1) throw new Error();
-      bytes = await image.rotate().resize(256, 256, { fit: 'cover' }).webp({ quality: 80 }).toBuffer();
+      metadata = await sharp(file.buffer, { limitInputPixels: 16777216 }).metadata();
+    } catch { throw new BadRequestException('Não foi possível processar esta imagem.'); }
+    if (!['png', 'jpeg', 'webp'].includes(metadata.format || '')) throw new BadRequestException('Use uma imagem PNG, JPG ou WebP.');
+    if ((metadata.pages || 1) !== 1) throw new BadRequestException('Não foi possível processar esta imagem.');
+    try {
+      bytes = await sharp(file.buffer, { limitInputPixels: 16777216 }).rotate().resize(256, 256, { fit: 'cover' }).webp({ quality: 80 }).toBuffer();
       if (bytes.length > 128 * 1024) throw new Error();
-    } catch { throw new BadRequestException('Use PNG, JPG ou WebP estático, até 2 MB e 16 megapixels.'); }
+    } catch { throw new BadRequestException('Não foi possível processar esta imagem.'); }
     const imageData = `data:image/webp;base64,${bytes.toString('base64')}`;
     const result = await this.prisma.token.updateMany({ where: { id: tokenId, roomId }, data: { imageUrl: imageData } });
-    if (result.count !== 1) throw new NotFoundException('Crie seu token na mesa antes de enviar o retrato.');
+    if (result.count !== 1) throw new NotFoundException('Token não encontrado.');
     this.gateway.publishTokenImage(roomId, tokenId, imageData);
     return { tokenId, imageData };
   }
