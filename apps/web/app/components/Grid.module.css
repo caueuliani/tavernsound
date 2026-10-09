@@ -44,6 +44,7 @@
 .toolbarActions button:disabled { opacity: .55; cursor: default; }
 .toolbarActions button[aria-pressed="true"] { background: #3b82f6; color: #fff; }
 .toolbarActions a { color: #ffc568; }
+.portraitError { flex-basis: 100%; margin: 0; color: #ffb4ab; }
 .toolbarNote { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; color: #cbb993; }
 .toolbarNote [role="alert"] { color: #ffb4ab; }
 .toolbarNote button { min-height: 32px; margin-left: .35rem; }

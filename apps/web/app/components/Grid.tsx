@@ -10,6 +10,7 @@ import type { Scene } from './SceneEditor'
 import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
 import { apiUrl, socketUrl } from '../lib/api-url'
+import { TOKEN_IMAGE_FALLBACK, tokenImageError } from '../lib/token-image-error'
 import { openingBounds, pointOnWall, solidSegments } from '../lib/scene-geometry'
 import { DEFAULT_GRID_SIZE, gridLinePositions } from '../lib/scene-grid'
 import styles from './Grid.module.css'
@@ -71,6 +72,7 @@ export default function Grid({ roomId }: GridProps) {
   const [tokenCount, setTokenCount] = useState(0)
   const [connected, setConnected] = useState(false)
   const [roomError, setRoomError] = useState('')
+  const [portraitError, setPortraitError] = useState('')
   const [testMode, setTestMode] = useState(true)
   const [testEndsAt, setTestEndsAt] = useState<number | null>(null)
   const [playerId, setPlayerId] = useState('')
@@ -147,25 +149,21 @@ export default function Grid({ roomId }: GridProps) {
     const tokenId = imageTargetTokenIdRef.current
     e.target.value = ''
     if (!file || !tokenId || uploadingPortrait) return
-    if (file.size > 2 * 1024 * 1024) { setRoomError('Imagem máxima: 2 MB.'); return }
+    setPortraitError('')
+    if (file.size > 2 * 1024 * 1024) { setPortraitError('A imagem deve ter no máximo 2 MB.'); return }
+    if (file.type && !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { setPortraitError('Use uma imagem PNG, JPG ou WebP.'); return }
     setUploadingPortrait(true)
-    setRoomError('')
     try {
       const body = new FormData()
       body.append('file', file)
       const response = await fetch(apiUrl(`/rooms/${roomId}/tokens/${tokenId}/image`), { method: 'POST', credentials: 'include', body })
       const result = await response.json().catch(() => null)
-      if (!response.ok) {
-        const message = response.status === 413 ? 'Imagem máxima: 2 MB.'
-          : [400, 401, 403, 404].includes(response.status) && typeof result?.message === 'string'
-            ? result.message : 'Não foi possível enviar a imagem. Tente novamente.'
-        throw new Error(message)
-      }
-      if (typeof result?.imageData !== 'string') throw new Error('Não foi possível enviar a imagem. Tente novamente.')
+      if (!response.ok) { setPortraitError(tokenImageError(response.status, result)); return }
+      if (typeof result?.imageData !== 'string') { setPortraitError(TOKEN_IMAGE_FALLBACK); return }
       for (const token of tokensRef.current.values()) {
         if (token.id === tokenId) { token.imageUrl = result.imageData; applyTokenImage(token, token.graphics) }
       }
-    } catch (error) { setRoomError(error instanceof Error ? error.message : 'Falha ao enviar retrato.') }
+    } catch { setPortraitError(TOKEN_IMAGE_FALLBACK) }
     finally { setUploadingPortrait(false) }
   }
   // Redesenha a barra de HP de um token no PixiJS
@@ -720,6 +718,7 @@ export default function Grid({ roomId }: GridProps) {
             </button>}
             {isHost && <a href={`/room/${roomId}/scene`}>Preparar cenário (sem áudio) →</a>}
           </div>
+          {portraitError && <p role="alert" className={styles.portraitError}>{portraitError}</p>}
           {(audioError || playbackBlocked || fogMode) && <div className={styles.toolbarNote}>
             {audioError && <span role="alert">{audioError}</span>}
             {audioConnected && playbackBlocked && <span>O navegador pausou a reprodução. <button onClick={enablePlayback}>Ativar som</button></span>}
@@ -791,7 +790,7 @@ export default function Grid({ roomId }: GridProps) {
               Salvar HP
             </button>
 
-            {tokenEditor.isOwn && (
+            {tokenEditor.isOwn && !isHost && (
               <button
                 onClick={() => {
                   imageTargetTokenIdRef.current = tokenEditor.tokenId

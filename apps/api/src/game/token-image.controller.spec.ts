@@ -28,12 +28,12 @@ describe('Character portraits', () => {
     expect(gateway.publishTokenImage).toHaveBeenCalledWith('ABC123', id, result.imageData);
   });
   it('rejects another player token before updating', async () => {
-    await expect(controller.upload('ABC123', 'foreign', req, await file())).rejects.toThrow('seu personagem');
+    await expect(controller.upload('ABC123', 'foreign', req, await file())).rejects.toThrow('Você não pode alterar a imagem deste token.');
     expect(prisma.token.updateMany).not.toHaveBeenCalled();
   });
   it('rejects a token ID from another room, even when that token exists', async () => {
     const otherRoomId = createHash('sha256').update('XYZ789:user').digest('hex');
-    await expect(controller.upload('ABC123', otherRoomId, req, await file())).rejects.toThrow('seu personagem');
+    await expect(controller.upload('ABC123', otherRoomId, req, await file())).rejects.toThrow('Você não pode alterar a imagem deste token.');
     expect(prisma.token.updateMany).not.toHaveBeenCalled();
   });
   it('never lets a known token ID bypass room membership', async () => {
@@ -52,18 +52,18 @@ describe('Character portraits', () => {
     await expect(controller.upload('ABC123', id, req, await file())).rejects.toThrow('denied');
     expect(prisma.token.updateMany).not.toHaveBeenCalled();
   });
-  it('rejects SVG and invalid bytes', async () => {
-    await expect(controller.upload('ABC123', id, req, { buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>') })).rejects.toThrow('PNG');
-    await expect(controller.upload('ABC123', id, req, { buffer: Buffer.from('not an image') })).rejects.toThrow('PNG');
+  it('distinguishes unsupported formats from malformed images', async () => {
+    await expect(controller.upload('ABC123', id, req, { buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>') })).rejects.toThrow('Use uma imagem PNG, JPG ou WebP.');
+    await expect(controller.upload('ABC123', id, req, { buffer: Buffer.from('not an image') })).rejects.toThrow('Não foi possível processar esta imagem.');
     expect(prisma.token.updateMany).not.toHaveBeenCalled();
   });
   it('rejects input larger than 2 MB before image processing', async () => {
-    await expect(controller.upload('ABC123', id, req, { buffer: Buffer.alloc(2 * 1024 * 1024 + 1) })).rejects.toThrow('2 MB');
+    await expect(controller.upload('ABC123', id, req, { buffer: Buffer.alloc(2 * 1024 * 1024 + 1) })).rejects.toThrow('A imagem deve ter no máximo 2 MB.');
     expect(prisma.token.updateMany).not.toHaveBeenCalled();
   });
   it('does not announce a portrait when the token was deleted', async () => {
     prisma.token.updateMany.mockResolvedValue({ count: 0 });
-    await expect(controller.upload('ABC123', id, req, await file())).rejects.toThrow('Crie seu token');
+    await expect(controller.upload('ABC123', id, req, await file())).rejects.toThrow('Token não encontrado.');
     expect(gateway.publishTokenImage).not.toHaveBeenCalled();
   });
   it('uploads without the obsolete local-storage flag', async () => {
