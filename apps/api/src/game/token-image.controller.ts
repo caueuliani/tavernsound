@@ -17,10 +17,9 @@ export class TokenImageController {
   async upload(@Param('roomId') roomId: string, @Param('tokenId') tokenId: string, @Req() req: Request, @UploadedFile() file: { buffer: Buffer }) {
     const user = await this.sessions.require(req.headers.cookie);
     await this.access.require(roomId, user.id);
-    if (process.env.LOCAL_TOKEN_UPLOADS !== 'true') throw new ForbiddenException('Retratos não habilitados nesta hospedagem.');
     const ownId = createHash('sha256').update(`${roomId}:${user.id}`).digest('hex');
     if (tokenId !== ownId) throw new ForbiddenException('Você só pode alterar o retrato do seu personagem nesta sala.');
-    if (!file?.buffer?.length) throw new BadRequestException('Selecione uma imagem de até 2 MB.');
+    if (!file?.buffer?.length || file.buffer.length > 2 * 1024 * 1024) throw new BadRequestException('Selecione uma imagem de até 2 MB.');
     let bytes: Buffer;
     try {
       const image = sharp(file.buffer, { limitInputPixels: 16777216 });

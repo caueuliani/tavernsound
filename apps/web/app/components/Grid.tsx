@@ -154,8 +154,14 @@ export default function Grid({ roomId }: GridProps) {
       const body = new FormData()
       body.append('file', file)
       const response = await fetch(apiUrl(`/rooms/${roomId}/tokens/${tokenId}/image`), { method: 'POST', credentials: 'include', body })
-      const result = await response.json()
-      if (!response.ok) throw new Error(typeof result.message === 'string' ? result.message : 'Não foi possível salvar o retrato.')
+      const result = await response.json().catch(() => null)
+      if (!response.ok) {
+        const message = response.status === 413 ? 'Imagem máxima: 2 MB.'
+          : [400, 401, 403, 404].includes(response.status) && typeof result?.message === 'string'
+            ? result.message : 'Não foi possível enviar a imagem. Tente novamente.'
+        throw new Error(message)
+      }
+      if (typeof result?.imageData !== 'string') throw new Error('Não foi possível enviar a imagem. Tente novamente.')
       for (const token of tokensRef.current.values()) {
         if (token.id === tokenId) { token.imageUrl = result.imageData; applyTokenImage(token, token.graphics) }
       }
