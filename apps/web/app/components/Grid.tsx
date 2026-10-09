@@ -11,6 +11,7 @@ import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
 import { apiUrl, socketUrl } from '../lib/api-url'
 import { openingBounds, pointOnWall, solidSegments } from '../lib/scene-geometry'
+import { DEFAULT_GRID_SIZE, gridLinePositions } from '../lib/scene-grid'
 import styles from './Grid.module.css'
 
 const GRID_SIZE = 500
@@ -324,11 +325,9 @@ export default function Grid({ roomId }: GridProps) {
       const drawGrid = (withMap: boolean) => {
         gridGraphics.clear()
         const alpha = withMap ? 0.3 : 1
-        for (let i = 0; i <= GRID_CELLS; i++) {
-          gridGraphics.moveTo(i * CELL_SIZE, 0).lineTo(i * CELL_SIZE, GRID_SIZE)
-        }
-        for (let i = 0; i <= GRID_CELLS; i++) {
-          gridGraphics.moveTo(0, i * CELL_SIZE).lineTo(GRID_SIZE, i * CELL_SIZE)
+        for (const position of gridLinePositions(DEFAULT_GRID_SIZE, GRID_SIZE)) {
+          gridGraphics.moveTo(position, 0).lineTo(position, GRID_SIZE)
+          gridGraphics.moveTo(0, position).lineTo(GRID_SIZE, position)
         }
         gridGraphics.stroke({ width: 1, color: 0xb8a88a, alpha })
       }
@@ -636,7 +635,7 @@ export default function Grid({ roomId }: GridProps) {
     const mapContainer = app.stage.getChildAt(0) as any
     let cancelled = false
     const source = scene ? scene.map ? apiUrl(scene.map.url) : null : mapData
-    const settings = scene?.settings || { scale: 1, x: 0, y: 0, gridOpacity: .3 }
+    const settings = scene?.settings || { scale: 1, x: 0, y: 0, gridOpacity: .3, gridSize: DEFAULT_GRID_SIZE }
 
     if (mapSpriteRef.current) {
       mapContainer.removeChild(mapSpriteRef.current)
@@ -666,11 +665,9 @@ export default function Grid({ roomId }: GridProps) {
     if (g) {
       g.clear()
       const alpha = settings.gridOpacity
-      for (let i = 0; i <= GRID_CELLS; i++) {
-        g.moveTo(i * CELL_SIZE, 0).lineTo(i * CELL_SIZE, GRID_SIZE)
-      }
-      for (let i = 0; i <= GRID_CELLS; i++) {
-        g.moveTo(0, i * CELL_SIZE).lineTo(GRID_SIZE, i * CELL_SIZE)
+      for (const position of gridLinePositions(settings.gridSize, GRID_SIZE)) {
+        g.moveTo(position, 0).lineTo(position, GRID_SIZE)
+        g.moveTo(0, position).lineTo(GRID_SIZE, position)
       }
       g.stroke({ width: 1, color: 0xb8a88a, alpha })
     }
@@ -686,9 +683,9 @@ export default function Grid({ roomId }: GridProps) {
     }
     const grid = (appRef.current.stage.getChildAt(1) as PIXI.Container).children[0] as PIXI.Graphics
     grid.clear()
-    for (let i = 0; i <= GRID_CELLS; i++) {
-      grid.moveTo(i * CELL_SIZE, 0).lineTo(i * CELL_SIZE, GRID_SIZE)
-      grid.moveTo(0, i * CELL_SIZE).lineTo(GRID_SIZE, i * CELL_SIZE)
+    for (const position of gridLinePositions(scene.settings.gridSize, GRID_SIZE)) {
+      grid.moveTo(position, 0).lineTo(position, GRID_SIZE)
+      grid.moveTo(0, position).lineTo(GRID_SIZE, position)
     }
     grid.stroke({ width: 1, color: 0xb8a88a, alpha: scene.settings.gridOpacity })
   }, [canvasReady, scene?.settings])

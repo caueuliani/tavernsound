@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { SceneController } from './scene.controller';
-import { emptyScene, validateSceneEdit } from './scene.util';
+import { emptyScene, readScene, validateSceneEdit } from './scene.util';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { PrismaService } from '../prisma/prisma.service';
@@ -85,6 +85,35 @@ describe('Scene storage and permissions', () => {
     expect(gateway.publishScene).toHaveBeenLastCalledWith('ABC123', result);
     const response = { setHeader: jest.fn() } as any;
     expect((await controller.get('ABC123', req, response)).scene).toEqual(result);
+  });
+  it('defaults old scenes to the former 10x10 grid without changing other settings', async () => {
+    const oldScene = emptyScene();
+    delete (oldScene.settings as Partial<typeof oldScene.settings>).gridSize;
+    oldScene.settings.gridOpacity = 0.75;
+    room.sceneData = oldScene;
+    const response = { setHeader: jest.fn() } as any;
+    const restored = (await controller.get('ABC123', req, response)).scene;
+    expect(restored.settings).toMatchObject({ gridSize: 10, gridOpacity: 0.75 });
+    expect(room.sceneData.settings).not.toHaveProperty('gridSize');
+    expect(readScene(oldScene).settings.gridSize).toBe(10);
+  });
+  it('saves and reloads grid size independently of grid opacity', async () => {
+    const edited = await controller.edit('ABC123', req, { settings: { ...emptyScene().settings, gridSize: 20, gridOpacity: 0.55 }, walls: [] }, '0');
+    expect(edited.settings).toMatchObject({ gridSize: 20, gridOpacity: 0.55 });
+    const response = { setHeader: jest.fn() } as any;
+    expect((await controller.get('ABC123', req, response)).scene.settings).toMatchObject({ gridSize: 20, gridOpacity: 0.55 });
+    expect(room.sceneData.settings.gridSize).toBe(20);
+  });
+  it('accepts the grid endpoints and rejects invalid or fractional cell counts', () => {
+    for (const gridSize of [4, 20, 100]) {
+      expect(validateSceneEdit({ ...emptyScene(), settings: { ...emptyScene().settings, gridSize } }).settings.gridSize).toBe(gridSize);
+    }
+    for (const gridSize of [3, 101, 20.5, NaN]) {
+      expect(() => validateSceneEdit({ ...emptyScene(), settings: { ...emptyScene().settings, gridSize } })).toThrow('Tamanho da grade');
+    }
+    const settings = { ...emptyScene().settings } as Partial<ReturnType<typeof emptyScene>['settings']>;
+    delete settings.gridSize;
+    expect(validateSceneEdit({ settings, walls: [] }).settings.gridSize).toBe(10);
   });
   it('persists wall openings while keeping an older wall without openings readable', async () => {
     const oldWall = { id: 'old', x1: 0, y1: 0, x2: 5, y2: 0, isDoor: true, isOpen: true, blocksAudio: true };

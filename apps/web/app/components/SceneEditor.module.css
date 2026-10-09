@@ -8,6 +8,9 @@
 .panel label { display: flex; gap: 8px; align-items: center; }
 .panel input[type=number] { width: 65px; background: #130e0a; color: #f4e4bc; border: 1px solid #82613c; padding: 5px; }
 .panel input[type=range] { width: 120px; min-height: 44px; accent-color: #f1b34c; }
+.gridControls { display: grid; gap: 4px; margin: 10px 0; }
+.gridControls label { display: grid; grid-template-columns: minmax(0, 145px) 120px auto; gap: 8px; }
+.gridControls output { white-space: nowrap; }
 .samples { display: flex; gap: 8px; }
 .samples button { flex: 1; padding: 5px; }
 .samples img { width: 100%; max-width: 125px; height: 75px; object-fit: cover; display: block; margin: 0 auto 5px; border-radius: 3px; }
