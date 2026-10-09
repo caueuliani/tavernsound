@@ -327,6 +327,7 @@ model Token {
   color       String?
   imageUrl    String?
   size        Int      @default(1)
+  sizeMultiplier Float @default(1)
   
   hp          Int?
   maxHp       Int?
