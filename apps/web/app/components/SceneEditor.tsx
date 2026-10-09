@@ -3,16 +3,17 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode, PointerEvent } from 'react'
 import { apiUrl } from '../lib/api-url'
 import { addPolylinePoint, emptyPolyline, openingBounds, pointOnWall, polylineShortcut, projectOnWall, solidSegments, undoPolyline, validOpenings, type Opening, type Polyline } from '../lib/scene-geometry'
+import { DEFAULT_GRID_SIZE, gridSizeOrDefault, snapToHalfGridCell } from '../lib/scene-grid'
 import styles from './SceneEditor.module.css'
 
 export interface SceneWall { id: string; x1: number; y1: number; x2: number; y2: number; isDoor: boolean; isOpen: boolean; blocksAudio: boolean; openings?: Opening[] }
 export interface Scene {
   revision: number
   map: { url: string; width: number; height: number } | null
-  settings: { scale: number; x: number; y: number; gridOpacity: number }
+  settings: { scale: number; x: number; y: number; gridOpacity: number; gridSize: number }
   walls: SceneWall[]
 }
-const initial = (): Scene => ({ revision: 0, map: null, settings: { scale: 1, x: 0, y: 0, gridOpacity: .3 }, walls: [] })
+const initial = (): Scene => ({ revision: 0, map: null, settings: { scale: 1, x: 0, y: 0, gridOpacity: .3, gridSize: DEFAULT_GRID_SIZE }, walls: [] })
 type Point = { x: number; y: number }
 type Tool = 'play' | 'wall' | 'door' | 'window' | 'cave' | 'select'
 export default function SceneEditor({ roomId, socket, connected, isHost, onChange, children }: {
@@ -43,7 +44,8 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
   const selectedWall = scene.walls.find(w => w.id === selected)
   const opening = selectedWall?.openings?.find(item => item.id === selectedOpening)
   const accept = (value: Scene) => {
-    setScene(value); sceneRef.current = value; setDirty(false); dirtyRef.current = false
+    const normalized = { ...value, settings: { ...value.settings, gridSize: gridSizeOrDefault(value.settings.gridSize) } }
+    setScene(normalized); sceneRef.current = normalized; setDirty(false); dirtyRef.current = false
     setPast([]); setFuture([]); setLoaded(true); setPolyline(emptyPolyline()); setError('')
   }
   const edit = (value: Scene) => {
@@ -108,7 +110,7 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
   }
   const point = (event: PointerEvent<SVGSVGElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect()
-    const value = (n: number) => Math.max(0, Math.min(10, snap ? Math.round(n * 2) / 2 : Math.round(n * 100) / 100))
+    const value = (n: number) => Math.max(0, Math.min(10, snap ? snapToHalfGridCell(n, scene.settings.gridSize) : Math.round(n * 100) / 100))
     return { x: value((event.clientX - rect.left) / rect.width * 10), y: value((event.clientY - rect.top) / rect.height * 10) }
   }
   const nearest = (p: Point) => scene.walls.map(w => {
@@ -228,7 +230,10 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
         <div className={styles.row}>
           <label>Escala <input aria-label="Escala do mapa" type="number" min=".25" max="4" step=".05" disabled={!editable} value={scene.settings.scale} onChange={e => edit({ ...scene, settings: { ...scene.settings, scale: Number(e.target.value) } })} /></label>
           {(['x', 'y'] as const).map(axis => <label key={axis}>Deslocamento {axis.toUpperCase()} <input type="number" min="-500" max="500" step="5" disabled={!editable} value={scene.settings[axis]} onChange={e => edit({ ...scene, settings: { ...scene.settings, [axis]: Number(e.target.value) } })} /></label>)}
-          <label>Grade <input aria-label="Opacidade da grade" type="range" min="0" max="1" step=".05" disabled={!editable} value={scene.settings.gridOpacity} onChange={e => edit({ ...scene, settings: { ...scene.settings, gridOpacity: Number(e.target.value) } })} /></label>
+        </div>
+        <div className={styles.gridControls}>
+          <label><span>Opacidade da grade</span><input aria-label="Opacidade da grade" type="range" min="0" max="1" step=".05" disabled={!editable} value={scene.settings.gridOpacity} onChange={e => edit({ ...scene, settings: { ...scene.settings, gridOpacity: Number(e.target.value) } })} /></label>
+          <label><span>Tamanho da grade</span><input aria-label="Tamanho da grade" type="range" min="4" max="100" step="1" disabled={!editable} value={scene.settings.gridSize} onChange={e => edit({ ...scene, settings: { ...scene.settings, gridSize: Math.max(4, Math.min(100, Math.round(Number(e.target.value)))) } })} /><output>{scene.settings.gridSize}x{scene.settings.gridSize}</output></label>
         </div>
         <div className={styles.row}>
           {([['play', 'Jogar'], ['wall', 'Parede'], ['door', 'Porta'], ['window', 'Janela'], ['cave', 'Caverna'], ['select', 'Selecionar / mover']] as const).map(([id, label]) => <button key={id} disabled={!editable} aria-pressed={tool === id} onClick={() => { setTool(id); finishPolyline() }}>{label}</button>)}
