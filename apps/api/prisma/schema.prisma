@@ -309,10 +309,16 @@ model RoomMember {
 // 🎭 TOKENS
 // ====================================
 
+enum TokenKind {
+  PLAYER
+  SCENERY
+}
+
 model Token {
   id          String   @id @default(cuid())
   roomId      String
   room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  kind        TokenKind @default(PLAYER)
   
   name        String
   x           Int

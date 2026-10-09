@@ -49,8 +49,8 @@ describe('GameGateway regressions', () => {
   });
 
   const prepareRoom = () => {
-    const player = { id: client.id, roomId: 'room-a', isHost: true, tokens: [] };
-    const room = { id: 'room-a', tokens: [], players: new Map([[client.id, player]]) };
+    const player = { id: client.id, roomId: 'room-a', isHost: true, tokens: [] as any[] };
+    const room = { id: 'room-a', tokens: [] as any[], players: new Map([[client.id, player]]) };
     (gateway as any).players.set(client.id, player);
     (gateway as any).rooms.set('room-a', room);
     return { player, room };
@@ -62,7 +62,7 @@ describe('GameGateway regressions', () => {
     access.require.mockResolvedValue({});
     prisma.room.findUnique.mockResolvedValue({
       id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
-      tokens: [{ id: tokenId, x: 3, y: 4, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
+      tokens: [{ id: tokenId, kind: 'PLAYER', x: 3, y: 4, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
     });
     await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
     const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
@@ -158,6 +158,7 @@ describe('GameGateway regressions', () => {
 
   it('creates only one token for concurrent clicks and keeps its identity', async () => {
     const { player, room } = prepareRoom();
+    player.isHost = false;
     let finish!: () => void;
     prisma.token.create.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
     const input = { tokenId: 'first-click', x: 1, y: 2, color: 0 };
@@ -169,5 +170,67 @@ describe('GameGateway regressions', () => {
     expect(prisma.token.create).toHaveBeenCalledTimes(1);
     expect(player.tokens).toHaveLength(1);
     expect(room.tokens).toHaveLength(1);
+  });
+
+  it('restores a persisted NPC after refresh with scenery kind and a stable visual key', async () => {
+    const npcId = 'b3e0e896-6c4b-4a0b-8b20-8a97d5b55f3c';
+    client.data.session = { id: 'owner', sid: 'session', name: 'owner' };
+    access.require.mockResolvedValue({});
+    prisma.room.findUnique.mockResolvedValue({
+      id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
+      tokens: [{ id: npcId, kind: 'SCENERY', x: 3, y: 4, color: '#ff9d00', name: 'Token de cenário' }],
+    });
+    await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
+    const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
+    expect(joined.tokens).toEqual([expect.objectContaining({ id: npcId, kind: 'SCENERY', playerId: npcId })]);
+    expect((gateway as any).players.get(client.id).tokens).toHaveLength(0);
+  });
+
+  it('restores the saved NPC name, falling back only for invalid historical names', async () => {
+    const npcId = 'b3e0e896-6c4b-4a0b-8b20-8a97d5b55f3c';
+    client.data.session = { id: 'owner', sid: 'session', name: 'owner' };
+    access.require.mockResolvedValue({});
+    prisma.room.findUnique.mockResolvedValue({
+      id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
+      tokens: [{ id: npcId, kind: 'SCENERY', x: 3, y: 4, color: '#ff9d00', name: '  Capitão da Guarda  ' }],
+    });
+    await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
+    const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
+    expect(joined.tokens[0].playerName).toBe('Capitão da Guarda');
+  });
+
+  it('updates an NPC name in room memory and emits only to its room', () => {
+    const { room } = prepareRoom();
+    const npc = { id: 'npc', kind: 'SCENERY', playerId: 'npc', playerName: 'Token de cenário' };
+    room.tokens.push(npc);
+    gateway.publishTokenName('room-a', 'npc', 'Ferreiro');
+    expect(npc.playerName).toBe('Ferreiro');
+    expect(gateway.server.to).toHaveBeenCalledWith('room-a');
+    expect(broadcast).toHaveBeenCalledWith('token-name-updated', { tokenId: 'npc', name: 'Ferreiro' });
+  });
+
+  it('creates distinct scenery tokens for repeated host clicks and broadcasts each', async () => {
+    const { player, room } = prepareRoom();
+    await gateway.handleCreateToken({ tokenId: 'ignored', x: 1, y: 2, color: 0 }, client);
+    await gateway.handleCreateToken({ tokenId: 'ignored', x: 3, y: 4, color: 0 }, client);
+    expect(prisma.token.create).toHaveBeenCalledTimes(2);
+    expect(prisma.token.create.mock.calls.map(([arg]: any[]) => arg.data.kind)).toEqual(['SCENERY', 'SCENERY']);
+    expect(new Set(room.tokens.map((token: any) => token.playerId)).size).toBe(2);
+    expect(room.tokens.every((token: any) => token.playerId === token.id)).toBe(true);
+    expect(player.tokens).toHaveLength(2);
+    expect(broadcast).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes an NPC from room and host memory and broadcasts only to that room', () => {
+    const { player, room } = prepareRoom();
+    const npc = { id: 'npc', kind: 'SCENERY', playerId: 'npc' };
+    const personal = { id: 'player-token', kind: 'PLAYER', playerId: 'player-socket' };
+    room.tokens.push(npc as any, personal as any);
+    player.tokens.push(npc as any);
+    gateway.publishTokenDeleted('room-a', 'npc');
+    expect(room.tokens).toEqual([personal]);
+    expect(player.tokens).toEqual([]);
+    expect(gateway.server.to).toHaveBeenCalledWith('room-a');
+    expect(broadcast).toHaveBeenCalledWith('token-deleted', { tokenId: 'npc' });
   });
 });
