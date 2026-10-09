@@ -20,12 +20,15 @@ test('handles non-JSON responses and never exposes internal messages', () => {
   assert.equal(tokenImageError(400, { message: 'internal validation error' }), TOKEN_IMAGE_FALLBACK)
 })
 
-test('portrait flow validates before fetch and presents errors beside its toolbar action', async () => {
+test('portrait flow validates before fetch and presents errors beside the relevant action', async () => {
   const source = await readFile(new URL('../components/Grid.tsx', import.meta.url), 'utf8')
   assert.match(source, /file\.size > 2 \* 1024 \* 1024/)
   assert.match(source, /file\.type && !\['image\/png', 'image\/jpeg', 'image\/webp'\]/)
   assert.match(source, /if \(!response\.ok\) \{ setPortraitError\(tokenImageError\(response\.status, result\)\); return \}/)
-  assert.match(source, /portraitError && <p role="alert" className=\{styles\.portraitError\}>/)
+  assert.match(source, /portraitError && \(!tokenEditor \|\| imageTargetTokenIdRef\.current !== tokenEditor\.tokenId\) && <p role="alert" className=\{styles\.portraitError\}>/)
   assert.match(source, /myOwnToken && <button/)
-  assert.match(source, /tokenEditor\.isOwn && !isHost && \(/)
+  assert.match(source, /\(tokenEditor\.isOwn && !isHost\) \|\| \(isHost && tokenEditor\.kind === 'SCENERY'\)/)
+  assert.match(source, /imageTargetTokenIdRef\.current = tokenEditor\.tokenId/)
+  assert.match(source, /portraitError && imageTargetTokenIdRef\.current === tokenEditor\.tokenId && <p role="alert"/)
+  assert.match(source, /'Trocar imagem'/)
 })

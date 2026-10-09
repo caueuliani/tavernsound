@@ -792,7 +792,7 @@ export default function Grid({ roomId }: GridProps) {
             </button>}
             {isHost && <a href={`/room/${roomId}/scene`}>Preparar cenário (sem áudio) →</a>}
           </div>
-          {portraitError && <p role="alert" className={styles.portraitError}>{portraitError}</p>}
+          {portraitError && (!tokenEditor || imageTargetTokenIdRef.current !== tokenEditor.tokenId) && <p role="alert" className={styles.portraitError}>{portraitError}</p>}
           {(audioError || playbackBlocked || fogMode) && <div className={styles.toolbarNote}>
             {audioError && <span role="alert">{audioError}</span>}
             {audioConnected && playbackBlocked && <span>O navegador pausou a reprodução. <button onClick={enablePlayback}>Ativar som</button></span>}
@@ -870,6 +870,21 @@ export default function Grid({ roomId }: GridProps) {
               {isHost && tokenEditor.kind === 'SCENERY' ? savingToken ? 'Salvando…' : 'Salvar alterações' : 'Salvar HP'}
             </button>
 
+            {((tokenEditor.isOwn && !isHost) || (isHost && tokenEditor.kind === 'SCENERY')) && (
+              <button
+                disabled={uploadingPortrait}
+                onClick={() => {
+                  imageTargetTokenIdRef.current = tokenEditor.tokenId
+                  setPortraitError('')
+                  imageInputRef.current?.click()
+                }}
+                style={{ width: '100%', padding: '0.4rem', background: 'transparent', color: '#d4af37', border: '1px solid #d4af37', borderRadius: '6px', cursor: uploadingPortrait ? 'default' : 'pointer', fontSize: '0.85rem' }}
+              >
+                {uploadingPortrait ? 'Enviando imagem…' : 'Trocar imagem'}
+              </button>
+            )}
+            {portraitError && imageTargetTokenIdRef.current === tokenEditor.tokenId && <p role="alert" style={{ color: '#ffb4ab', fontSize: '0.8rem' }}>{portraitError}</p>}
+
             {isHost && tokenEditor.kind === 'SCENERY' && <div style={{ borderTop: '1px solid #66482a', marginTop: '0.75rem', paddingTop: '0.75rem' }}>
               <button onClick={handleDeleteToken} disabled={deletingToken} style={{ width: '100%', padding: '0.4rem', background: 'transparent', color: '#ffb4ab', border: '1px solid #a34747', borderRadius: '6px', fontSize: '0.85rem', cursor: deletingToken ? 'default' : 'pointer' }}>
                 {deletingToken ? 'Excluindo…' : 'Excluir token'}
@@ -877,18 +892,6 @@ export default function Grid({ roomId }: GridProps) {
             </div>}
             {tokenEditorError && <p role="alert" style={{ color: '#ffb4ab', fontSize: '0.8rem' }}>{tokenEditorError}</p>}
 
-            {tokenEditor.isOwn && !isHost && (
-              <button
-                onClick={() => {
-                  imageTargetTokenIdRef.current = tokenEditor.tokenId
-                  imageInputRef.current?.click()
-                  setTokenEditor(null)
-                }}
-                style={{ width: '100%', padding: '0.4rem', background: 'transparent', color: '#d4af37', border: '1px solid #d4af37', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' }}
-              >
-                Trocar Imagem
-              </button>
-            )}
           </div>
         )}
 
