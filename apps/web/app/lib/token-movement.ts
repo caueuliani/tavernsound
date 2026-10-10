@@ -1,5 +1,6 @@
 import { openingBounds, pointOnWall, solidSegments } from './scene-geometry.ts'
 import type { WallGeometry } from './scene-geometry.ts'
+import { gridStep, snapTokenCoordinate } from './scene-grid.ts'
 
 export const TOKEN_SIZES = [0.5, 1, 2, 3, 4] as const
 export const tokenSize = (value: unknown): number => TOKEN_SIZES.includes(value as any) ? value as number : 1
@@ -49,7 +50,26 @@ export function validTokenPosition(point: Point, size: unknown, gridSize: number
   return segments.every(segment => pointSegmentDistance(point, segment) >= radius - 1e-6)
 }
 
-export const tokenCenter = (x: number, y: number): Point => ({ x: x + 0.5, y: y + 0.5 })
+export const tokenCenter = (x: number, y: number, gridSize = 10): Point => ({ x: x + gridStep(gridSize) / 2, y: y + gridStep(gridSize) / 2 })
+
+export function arrowDestination(from: Point, key: string, gridSize: number): Point | null {
+  const step = gridStep(gridSize)
+  const directions: Record<string, Point> = { ArrowRight: { x: 1, y: 0 }, ArrowLeft: { x: -1, y: 0 }, ArrowDown: { x: 0, y: 1 }, ArrowUp: { x: 0, y: -1 } }
+  const direction = directions[key]
+  if (!direction) return null
+  return { x: Number((from.x + direction.x * step).toFixed(6)), y: Number((from.y + direction.y * step).toFixed(6)) }
+}
+
+export function keyboardToken<T extends { id: string; kind?: 'PLAYER' | 'SCENERY'; isOwn?: boolean }>(tokens: Iterable<T>, isHost: boolean, selectedTokenId: string | null): T | null {
+  for (const token of tokens) {
+    if (isHost ? token.kind === 'SCENERY' && token.id === selectedTokenId : token.kind === 'PLAYER' && token.isOwn === true) return token
+  }
+  return null
+}
+
+export function isTypingTarget(target: EventTarget | null): boolean {
+  return typeof Element !== 'undefined' && target instanceof Element && Boolean(target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"]'))
+}
 
 export function validTokenMove(from: Point, to: Point, size: unknown, gridSize: number, segments: Segment[]): boolean {
   if (!validTokenPosition(to, size, gridSize, segments)) return false
@@ -63,11 +83,11 @@ export function validTokenMove(from: Point, to: Point, size: unknown, gridSize: 
 
 export function lastValidTokenCell(from: Point, desired: Point, size: unknown, gridSize: number, segments: Segment[], occupied: (x: number, y: number) => boolean): Point {
   let last = from
-  const steps = Math.max(1, Math.ceil(Math.hypot(desired.x - from.x, desired.y - from.y) * 10))
+  const steps = Math.max(1, Math.ceil(Math.hypot(desired.x - from.x, desired.y - from.y) / gridStep(gridSize) * 10))
   for (let i = 1; i <= steps; i++) {
-    const candidate = { x: Math.floor(from.x + (desired.x - from.x) * i / steps), y: Math.floor(from.y + (desired.y - from.y) * i / steps) }
+    const candidate = { x: snapTokenCoordinate(from.x + (desired.x - from.x) * i / steps, gridSize), y: snapTokenCoordinate(from.y + (desired.y - from.y) * i / steps, gridSize) }
     if (candidate.x === last.x && candidate.y === last.y) continue
-    if (occupied(candidate.x, candidate.y) || !validTokenMove(tokenCenter(from.x, from.y), tokenCenter(candidate.x, candidate.y), size, gridSize, segments)) break
+    if (occupied(candidate.x, candidate.y) || !validTokenMove(tokenCenter(last.x, last.y, gridSize), tokenCenter(candidate.x, candidate.y, gridSize), size, gridSize, segments)) break
     last = candidate
   }
   return last

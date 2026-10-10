@@ -2,6 +2,11 @@ import type { SceneWall } from './scene.util';
 
 export const TOKEN_SIZES = [0.5, 1, 2, 3, 4] as const;
 export const tokenSize = (value: unknown): number => TOKEN_SIZES.includes(value as any) ? value as number : 1;
+export const gridStep = (gridSize: number): number => 10 / (Number.isInteger(gridSize) && gridSize >= 4 && gridSize <= 100 ? gridSize : 10);
+export const isTokenGridCoordinate = (coordinate: number, gridSize: number): boolean => {
+  const step = gridStep(gridSize);
+  return Number.isFinite(coordinate) && coordinate >= 0 && coordinate < 10 && Math.abs(coordinate / step - Math.round(coordinate / step)) < 1e-5;
+};
 export const tokenRadius = (size: unknown, gridSize: number): number => 5 * tokenSize(size) / gridSize;
 
 interface Point { x: number; y: number }
@@ -47,8 +52,8 @@ export function validTokenPosition(point: Point, size: unknown, gridSize: number
   return segments.every(segment => pointSegmentDistance(point, segment) >= radius - 1e-6);
 }
 
-// Token coordinates remain the legacy 10×10 cell indices; collision uses their centers in scene units.
-export const tokenCenter = (x: number, y: number): Point => ({ x: x + 0.5, y: y + 0.5 });
+// Token coordinates are the logical origin of a cell; old 10×10 integer positions remain valid.
+export const tokenCenter = (x: number, y: number, gridSize = 10): Point => ({ x: x + gridStep(gridSize) / 2, y: y + gridStep(gridSize) / 2 });
 
 export function validTokenMove(from: Point, to: Point, size: unknown, gridSize: number, segments: Segment[]): boolean {
   if (!validTokenPosition(to, size, gridSize, segments)) return false;
