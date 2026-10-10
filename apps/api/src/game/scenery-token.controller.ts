@@ -28,7 +28,7 @@ export class SceneryTokenController {
       if (token.kind !== 'SCENERY') throw new ForbiddenException('Você não pode editar este token.');
       if (size !== undefined) {
         const scene = readScene(room.sceneData);
-        if (!validTokenPosition(tokenCenter(token.x, token.y), size, scene.settings.gridSize, movementSegments(scene.walls))) {
+        if (!validTokenPosition(tokenCenter(token.positionX ?? token.x, token.positionY ?? token.y, scene.settings.gridSize), size, scene.settings.gridSize, movementSegments(scene.walls))) {
           throw new BadRequestException('Este tamanho não cabe na posição atual do token.');
         }
       }

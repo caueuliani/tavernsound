@@ -56,14 +56,14 @@ describe('GameGateway regressions', () => {
     return { player, room };
   };
 
-  const joinPersistedRoom = async (userId: string, tokenUserId: string, size = 1, sceneData: any = null) => {
+  const joinPersistedRoom = async (userId: string, tokenUserId: string, size = 1, sceneData: any = null, finePosition?: { x: number; y: number }) => {
     const tokenId = createHash('sha256').update(`ABC123:${tokenUserId}`).digest('hex');
     client.data.session = { id: userId, sid: 'session', name: userId };
     access.require.mockResolvedValue({});
     prisma.room.findUnique.mockResolvedValue({
       id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
       sceneData,
-      tokens: [{ id: tokenId, kind: 'PLAYER', x: 3, y: 4, sizeMultiplier: size, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
+      tokens: [{ id: tokenId, kind: 'PLAYER', x: 3, y: 4, positionX: finePosition?.x, positionY: finePosition?.y, sizeMultiplier: size, color: '#ff9d00', name: tokenUserId, hp: 8, maxHp: 10 }],
     });
     await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
     const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
@@ -183,7 +183,7 @@ describe('GameGateway regressions', () => {
     expect(client.emit).toHaveBeenCalledWith('token-moved', { tokenId, x: 3, y: 4, playerId: client.id });
     expect(client.to().emit).not.toHaveBeenCalledWith('token-moved', expect.anything());
     gateway.handleMoveToken({ tokenId, x: 3, y: 5 }, client);
-    expect(prisma.token.update).toHaveBeenCalledWith({ where: { id: tokenId }, data: { x: 3, y: 5 } });
+    expect(prisma.token.update).toHaveBeenCalledWith({ where: { id: tokenId }, data: { x: 3, y: 5, positionX: 3, positionY: 5 } });
   });
 
   it('restores scene geometry and grid size before admitting movement after restart', async () => {
@@ -192,6 +192,38 @@ describe('GameGateway regressions', () => {
     const { tokenId } = await joinPersistedRoom('player', 'player', 1, sceneData);
     expect((gateway as any).rooms.get('ABC123')).toMatchObject({ gridSize: 20, walls: [wall] });
     gateway.handleMoveToken({ tokenId, x: 6, y: 4 }, client);
+    expect(prisma.token.update).not.toHaveBeenCalled();
+  });
+
+  it('persists and broadcasts one 20x20 cell of fractional player movement', async () => {
+    const { tokenId } = await joinPersistedRoom('player', 'player');
+    const room = (gateway as any).rooms.get('ABC123');
+    room.gridSize = 20;
+    gateway.handleMoveToken({ tokenId, x: 3.5, y: 4 }, client);
+    expect(prisma.token.update).toHaveBeenCalledWith({ where: { id: tokenId }, data: { x: 3, y: 4, positionX: 3.5, positionY: 4 } });
+    expect(client.to().emit).toHaveBeenCalledWith('token-moved', { tokenId, x: 3.5, y: 4, playerId: client.id });
+    expect((gateway as any).players.get(client.id).audioPosition).toEqual({ x: 3.5, y: 4, z: 0 });
+    gateway.handleMoveToken({ tokenId, x: 3.75, y: 4 }, client);
+    expect(prisma.token.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores a fine grid position after reconnect while preserving legacy coordinates', async () => {
+    const { joined, player } = await joinPersistedRoom('player', 'player', 1, null, { x: 3.5, y: 4.25 });
+    expect(joined.tokens[0]).toMatchObject({ x: 3.5, y: 4.25 });
+    expect(player.audioPosition).toEqual({ x: 3.5, y: 4.25, z: 0 });
+  });
+
+  it('accepts fractional NPC placement but does not let a player move another token', async () => {
+    const { player, room } = prepareRoom();
+    room.gridSize = 20;
+    await gateway.handleCreateToken({ tokenId: 'ignored', x: .5, y: .5, color: 0 }, client);
+    const npc = room.tokens[0];
+    expect(prisma.token.create).toHaveBeenCalledWith({ data: expect.objectContaining({ x: 0, y: 0, positionX: .5, positionY: .5, kind: 'SCENERY' }) });
+    gateway.handleMoveToken({ tokenId: npc.id, x: 1, y: .5 }, client);
+    expect(client.to().emit).toHaveBeenCalledWith('token-moved', { tokenId: npc.id, x: 1, y: .5, playerId: npc.id });
+    player.isHost = false;
+    prisma.token.update.mockClear();
+    gateway.handleMoveToken({ tokenId: npc.id, x: 1.5, y: .5 }, client);
     expect(prisma.token.update).not.toHaveBeenCalled();
   });
 

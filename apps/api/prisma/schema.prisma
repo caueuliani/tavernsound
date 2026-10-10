@@ -323,6 +323,8 @@ model Token {
   name        String
   x           Int
   y           Int
+  positionX   Float?
+  positionY   Float?
   
   color       String?
   imageUrl    String?

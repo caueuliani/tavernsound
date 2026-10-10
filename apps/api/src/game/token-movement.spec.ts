@@ -1,4 +1,4 @@
-import { movementSegments, tokenCenter, tokenRadius, tokenSize, validTokenMove, validTokenPosition } from './token-movement';
+import { gridStep, isTokenGridCoordinate, movementSegments, tokenCenter, tokenRadius, tokenSize, validTokenMove, validTokenPosition } from './token-movement';
 import type { SceneWall } from './scene.util';
 
 const wall = (overrides: Partial<SceneWall> = {}): SceneWall => ({ id: 'wall', x1: 5, y1: 0, x2: 5, y2: 10, isDoor: false, isOpen: false, blocksAudio: true, ...overrides });
@@ -12,6 +12,12 @@ describe('server token movement', () => {
     expect(tokenRadius(2, 10)).toBe(1);
     expect(tokenRadius(1, 20)).toBe(.25);
     expect(tokenSize(7)).toBe(1);
+    for (const gridSize of [4, 10, 20, 30, 40, 50, 100]) {
+      expect(gridStep(gridSize)).toBe(10 / gridSize);
+      expect(isTokenGridCoordinate(Number(gridStep(gridSize).toFixed(6)), gridSize)).toBe(true);
+    }
+    expect(isTokenGridCoordinate(.75, 20)).toBe(false);
+    expect(tokenCenter(2, 3, 20)).toEqual({ x: 2.25, y: 3.25 });
   });
   it('blocks walls, closed doors and windows, but passes an open door', () => {
     expect(validTokenMove(from, through, 1, 10, movementSegments([wall()]))).toBe(false);

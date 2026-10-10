@@ -19,7 +19,7 @@ import { TEST_LIMITS } from '../safety/test-policy';
 import { sceneryNameOrFallback } from './scenery-token-name';
 import { readScene } from './scene.util';
 import type { SceneWall } from './scene.util';
-import { movementSegments, tokenCenter, tokenSize, validTokenMove, validTokenPosition } from './token-movement';
+import { isTokenGridCoordinate, movementSegments, tokenCenter, tokenSize, validTokenMove, validTokenPosition } from './token-movement';
 
 interface TokenData {
   id: string;
@@ -345,8 +345,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
         id: t.id,
         kind: t.kind,
-        x: t.x,
-        y: t.y,
+        x: t.positionX ?? t.x,
+        y: t.positionY ?? t.y,
         color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
         playerId: t.id,
         playerName: t.kind === 'SCENERY' ? sceneryNameOrFallback(t.name) : t.id === legacyHostTokenId ? 'Token antigo (sem vínculo)' : t.name,
@@ -634,7 +634,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       client.emit('token-created', player.tokens[0]);
       return { ok: true };
     }
-    if (!Number.isInteger(data.x) || !Number.isInteger(data.y) || !validTokenPosition(tokenCenter(data.x, data.y), 1, room.gridSize ?? 10, movementSegments(room.walls ?? []))) {
+    if (!isTokenGridCoordinate(data.x, room.gridSize ?? 10) || !isTokenGridCoordinate(data.y, room.gridSize ?? 10) || !validTokenPosition(tokenCenter(data.x, data.y, room.gridSize ?? 10), 1, room.gridSize ?? 10, movementSegments(room.walls ?? []))) {
       client.emit('room-error', { message: 'Posição indisponível para criar o token.' });
       return { ok: false };
     }
@@ -647,8 +647,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
           roomId: player.roomId,
           kind: token.kind,
           name: token.playerName || 'Token',
-          x: data.x,
-          y: data.y,
+          x: Math.floor(data.x),
+          y: Math.floor(data.y),
+          positionX: data.x,
+          positionY: data.y,
           color: `#${data.color.toString(16).padStart(6, '0')}`,
         },
       });
@@ -678,13 +680,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const room = this.rooms.get(player.roomId);
     if (!room) return;
 
-    const token = player.tokens.find(t => t.id === data.tokenId) ??
-      (player.isHost ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id) : undefined);
+    const token = player.isHost
+      ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id)
+      : player.tokens.find(t => t.id === data.tokenId && t.kind === 'PLAYER');
     if (!token) return;
 
     const segments = movementSegments(room.walls ?? []);
-    if (!Number.isInteger(data.x) || !Number.isInteger(data.y) ||
-      !validTokenMove(tokenCenter(token.x, token.y), tokenCenter(data.x, data.y), token.size, room.gridSize ?? 10, segments)) {
+    if (!isTokenGridCoordinate(data.x, room.gridSize ?? 10) || !isTokenGridCoordinate(data.y, room.gridSize ?? 10) ||
+      !validTokenMove(tokenCenter(token.x, token.y, room.gridSize ?? 10), tokenCenter(data.x, data.y, room.gridSize ?? 10), token.size, room.gridSize ?? 10, segments)) {
       client.emit('token-moved', { tokenId: token.id, x: token.x, y: token.y, playerId: token.playerId });
       return;
     }
@@ -709,7 +712,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     });
 
     this.prisma.token
-      .update({ where: { id: data.tokenId }, data: { x: data.x, y: data.y } })
+      .update({ where: { id: data.tokenId }, data: { x: Math.floor(data.x), y: Math.floor(data.y), positionX: data.x, positionY: data.y } })
       .catch(() => {});
   }
 

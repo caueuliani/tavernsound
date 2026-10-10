@@ -1,7 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { DEFAULT_GRID_SIZE, gridLinePositions, gridSizeOrDefault, snapToHalfGridCell } from './scene-grid.ts'
+import { DEFAULT_GRID_SIZE, gridLinePositions, gridSizeOrDefault, gridStep, isTokenGridCoordinate, snapToHalfGridCell, snapTokenCoordinate } from './scene-grid.ts'
+
+test('token steps shrink as cells increase and snap to one visual cell', () => {
+  for (const size of [4, 10, 20, 30, 40, 50, 100]) {
+    const step = gridStep(size)
+    assert.equal(step, 10 / size)
+    assert.equal(snapTokenCoordinate(step * 1.5, size), Number(step.toFixed(6)))
+    assert.equal(isTokenGridCoordinate(Number(step.toFixed(6)), size), true)
+    assert.ok(Math.abs(gridLinePositions(size)[1] - step * 50) < 1e-9)
+  }
+  assert.equal(gridStep(20), .5)
+  assert.equal(gridStep(40), .25)
+  assert.equal(gridStep(100), .1)
+  assert.equal(isTokenGridCoordinate(.75, 20), false)
+})
 
 test('legacy scenes use the old 10x10 visual grid', () => {
   assert.equal(DEFAULT_GRID_SIZE, 10)
