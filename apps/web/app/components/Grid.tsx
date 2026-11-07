@@ -6,6 +6,7 @@ import { io } from 'socket.io-client'
 import { useSpatialAudio } from '../hooks/useSpatialAudio'
 import DiceRoller from './DiceRoller'
 import DiceHistory from './DiceHistory'
+import AmbientSound from './AmbientSound'
 import type { Scene } from './SceneEditor'
 import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
@@ -891,6 +892,7 @@ export default function Grid({ roomId }: GridProps) {
             </button>}
             {isHost && <a href={`/room/${roomId}/scene`}>Preparar cenário (sem áudio) →</a>}
           </div>
+          <div style={{ flexBasis: '100%', borderTop: '1px solid #60452d', paddingTop: 8 }}><AmbientSound /></div>
           {portraitError && (!tokenEditor || imageTargetTokenIdRef.current !== tokenEditor.tokenId) && <p role="alert" className={styles.portraitError}>{portraitError}</p>}
           {(audioError || playbackBlocked || fogMode) && <div className={styles.toolbarNote}>
             {audioError && <span role="alert">{audioError}</span>}
