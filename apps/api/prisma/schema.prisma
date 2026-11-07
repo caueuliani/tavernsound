@@ -222,6 +222,7 @@ enum CampaignStatus {
 
 model Campaign {
   id            String         @id @default(cuid())
+  gameSystemId  String         @default("generic")
   name          String
   description   String?
   status        CampaignStatus @default(ACTIVE)
