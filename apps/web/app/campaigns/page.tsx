@@ -11,6 +11,8 @@ const button = { padding: '0.8rem 1rem', border: '1px solid #a67c43', borderRadi
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [systems, setSystems] = useState<System[]>([])
+  const [ownedRooms, setOwnedRooms] = useState<{ id: string; name: string | null }[]>([])
+  const [selectedRoom, setSelectedRoom] = useState<Record<string, string>>({})
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [gameSystemId, setGameSystemId] = useState('dnd5e-2014-srd51')
@@ -32,12 +34,14 @@ export default function CampaignsPage() {
       fetch(apiUrl('/campaigns'), { credentials: 'include', cache: 'no-store' }),
       fetch(apiUrl('/campaigns/systems'), { credentials: 'include', cache: 'no-store' }),
       fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' }),
-    ]).then(async ([c, s, m]) => {
+      fetch(apiUrl('/rooms'), { credentials: 'include', cache: 'no-store' }),
+    ]).then(async ([c, s, m, roomsRes]) => {
       if (!c.ok || !s.ok) throw new Error('Entre na sua conta para gerenciar campanhas.')
-      const [campaignData, systemsData, me] = await Promise.all([c.json(), s.json(), m.json()])
+      const [campaignData, systemsData, me, roomsData] = await Promise.all([c.json(), s.json(), m.json(), roomsRes.ok ? roomsRes.json() : Promise.resolve([])])
       if (!active) return
       setCampaigns(Array.isArray(campaignData) ? campaignData : [])
       setSystems(Array.isArray(systemsData) ? systemsData : [])
+      setOwnedRooms(Array.isArray(roomsData) ? roomsData.filter((room: { isOwner?: boolean }) => room.isOwner === true) : [])
       setUserId(me?.user?.id || '')
     }).catch(err => { if (active) setError(err instanceof Error ? err.message : 'Erro ao carregar campanhas.') })
     return () => { active = false }
@@ -62,6 +66,21 @@ export default function CampaignsPage() {
       setNotice('Campanha criada com sucesso.')
     } catch (err) { setError(err instanceof Error ? err.message : 'Erro ao criar campanha.') }
     finally { setBusy(false) }
+  }
+
+  const attachRoom = async (campaign: Campaign) => {
+    const roomId = selectedRoom[campaign.id]
+    if (!roomId) { setError('Escolha uma sala que você administra.'); return }
+    setError('')
+    setNotice('')
+    try {
+      const response = await fetch(apiUrl(`/campaigns/${campaign.id}/rooms/${roomId}`), {
+        method: 'PUT', credentials: 'include',
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.message || 'Não foi possível associar a sala.')
+      setNotice(`Sala ${roomId} vinculada à campanha "${campaign.name}".`)
+    } catch (error) { setError(error instanceof Error ? error.message : 'Erro ao vincular sala.') }
   }
 
   const invite = async (campaign: Campaign) => {
@@ -114,6 +133,13 @@ export default function CampaignsPage() {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
             <a style={button} href={`/campaigns/${campaign.id}/characters`}>Abrir fichas</a>
             {campaign.ownerId === userId && <button style={button} onClick={() => invite(campaign)}>Copiar convite</button>}
+            {campaign.ownerId === userId && ownedRooms.length > 0 && <>
+              <select aria-label={`Sala da campanha ${campaign.name}`} style={{ ...field, width: 'auto' }} value={selectedRoom[campaign.id] || ''} onChange={e => setSelectedRoom(current => ({ ...current, [campaign.id]: e.target.value }))}>
+                <option value="">Selecione uma sala</option>
+                {ownedRooms.map(room => <option key={room.id} value={room.id}>{room.name || room.id} · {room.id}</option>)}
+              </select>
+              <button style={button} onClick={() => attachRoom(campaign)}>Vincular sala</button>
+            </>}
           </div>
         </article>)}
       </div>
