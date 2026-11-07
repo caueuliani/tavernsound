@@ -126,6 +126,16 @@ export class CampaignsService {
       throw new ForbiddenException('Apenas o dono pode editar a campanha');
     }
 
+    if (dto.gameSystemId !== undefined && gameSystemId(dto.gameSystemId) !== (campaign.gameSystemId ?? 'generic')) {
+      const [characterCount, roomCount] = await Promise.all([
+        this.prisma.character.count({ where: { campaignId } }),
+        this.prisma.room.count({ where: { campaignId } }),
+      ]);
+      if (characterCount > 0 || roomCount > 0) {
+        throw new ConflictException('Não é possível trocar o sistema enquanto houver personagens ou salas vinculadas.');
+      }
+    }
+
     const updated = await this.prisma.campaign.update({
       where: { id: campaignId },
       data: { name: dto.name === undefined ? undefined : validateCampaignName(dto.name),
