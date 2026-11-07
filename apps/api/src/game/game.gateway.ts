@@ -17,6 +17,7 @@ import { AudioPosition, SpatialAudioSettings } from './dto/room.dto';
 import { TestSafetyService } from '../safety/test-safety.service';
 import { TEST_LIMITS, betaLimits } from '../safety/test-policy';
 import { sceneryNameOrFallback } from './scenery-token-name';
+import { parseDiceRequest, rollDice } from './dice.util';
 import { readScene } from './scene.util';
 import type { SceneWall } from './scene.util';
 import { isTokenGridCoordinate, movementSegments, tokenCenter, tokenSize, validTokenMove, validTokenPosition } from './token-movement';
@@ -760,44 +761,45 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   }
 
   @SubscribeMessage('roll-dice')
-  handleRollDice(
-    @MessageBody() data: {
-      formula: string;
-      result: number;
-      rolls: number[];
-      modifier: number;
-    },
+  async handleRollDice(
+    @MessageBody() data: unknown,
     @ConnectedSocket() client: Socket,
   ) {
     const player = this.players.get(client.id);
-    if (!player || !player.roomId) return;
+    if (!player?.roomId) return;
+    const request = parseDiceRequest(data);
+    if (!request) {
+      client.emit('room-error', { message: 'Rolagem inválida. Escolha entre 1 e 30 dados e um modificador de -1000 a 1000.' });
+      return;
+    }
 
+    const rolled = rollDice(request);
     const rollData = {
       playerId: client.id,
       playerName: player.name,
-      formula: data.formula,
-      result: data.result,
-      rolls: data.rolls,
-      modifier: data.modifier,
+      formula: rolled.formula,
+      result: rolled.result,
+      rolls: rolled.rolls,
+      modifier: rolled.modifier,
       timestamp: Date.now(),
     };
-
-    this.server.to(player.roomId).emit('dice-rolled', rollData);
-
-    this.prisma.diceRoll
-      .create({
+    try {
+      await this.prisma.diceRoll.create({
         data: {
           roomId: player.roomId,
           userId: player.userId ?? null,
           playerName: player.name || 'Jogador',
-          diceType: data.formula,
-          quantity: 1,
-          modifier: data.modifier,
-          result: data.result,
-          rolls: data.rolls,
+          diceType: rolled.formula,
+          quantity: rolled.quantity,
+          modifier: rolled.modifier,
+          result: rolled.result,
+          rolls: rolled.rolls,
         },
-      })
-      .catch(() => {});
+      });
+      this.server.to(player.roomId).emit('dice-rolled', rollData);
+    } catch {
+      client.emit('room-error', { message: 'A rolagem não pôde ser registrada. Tente novamente.' });
+    }
   }
 
   @SubscribeMessage('update-token-hp')
