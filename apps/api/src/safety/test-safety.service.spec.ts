@@ -1,5 +1,5 @@
 import { TestSafetyService } from './test-safety.service';
-import { appEnvironment, requireTester, TEST_LIMITS, testMode } from './test-policy';
+import { appEnvironment, betaLimits, requireTester, TEST_LIMITS, testMode } from './test-policy';
 import { budgetDatabase } from './test-database.double';
 import { createHash } from 'crypto';
 
@@ -11,10 +11,14 @@ describe('Beta limits (transaction double)', () => {
   const previousEnvironment = process.env.APP_ENV;
   const previousNodeEnvironment = process.env.NODE_ENV;
   const previousEmails = process.env.TEST_ALLOWED_EMAILS;
+  const previousParticipants = process.env.BETA_MAX_PARTICIPANTS;
+  const previousVoice = process.env.BETA_DAILY_VOICE_MINUTES;
   beforeEach(() => {
     process.env.TEST_MODE = 'true';
     process.env.APP_ENV = 'beta';
     process.env.TEST_ALLOWED_EMAILS = 'owner@example.test';
+    delete process.env.BETA_MAX_PARTICIPANTS;
+    delete process.env.BETA_DAILY_VOICE_MINUTES;
     now = Date.parse('2026-09-25T12:00:00Z');
     jest.spyOn(Date, 'now').mockImplementation(() => now);
     db = budgetDatabase(); safety = new TestSafetyService(db as any);
@@ -25,6 +29,8 @@ describe('Beta limits (transaction double)', () => {
     if (previousEnvironment === undefined) delete process.env.APP_ENV; else process.env.APP_ENV = previousEnvironment;
     if (previousNodeEnvironment === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousNodeEnvironment;
     if (previousEmails === undefined) delete process.env.TEST_ALLOWED_EMAILS; else process.env.TEST_ALLOWED_EMAILS = previousEmails;
+    if (previousParticipants === undefined) delete process.env.BETA_MAX_PARTICIPANTS; else process.env.BETA_MAX_PARTICIPANTS = previousParticipants;
+    if (previousVoice === undefined) delete process.env.BETA_DAILY_VOICE_MINUTES; else process.env.BETA_DAILY_VOICE_MINUTES = previousVoice;
   });
 
   it('defaults to beta, permits any email with or without the legacy allowlist, and validates the environment', () => {
@@ -60,6 +66,35 @@ describe('Beta limits (transaction double)', () => {
 
     process.env.APP_ENV = 'invalid';
     expect(() => appEnvironment()).toThrow('APP_ENV');
+  });
+  it('rejects invalid or unsafe beta overrides (fail closed)', () => {
+    process.env.BETA_MAX_PARTICIPANTS = '0';
+    expect(() => betaLimits()).toThrow('BETA_MAX_PARTICIPANTS');
+    process.env.BETA_MAX_PARTICIPANTS = '13';
+    expect(() => new TestSafetyService(db as any)).toThrow('BETA_MAX_PARTICIPANTS');
+    process.env.BETA_MAX_PARTICIPANTS = '6';
+    process.env.BETA_DAILY_VOICE_MINUTES = '999999';
+    expect(() => betaLimits()).toThrow('BETA_DAILY_VOICE_MINUTES');
+    process.env.BETA_DAILY_VOICE_MINUTES = '1080';
+    expect(betaLimits()).toMatchObject({ participants: 6, dailyMinutes: 1080 });
+  });
+  it('admits a configured sixth participant but rejects a seventh', async () => {
+    process.env.BETA_MAX_PARTICIPANTS = '6';
+    for (let i = 0; i < 6; i++) {
+      await safety.admit('ABC123', `u${i}`, `s${i}`, `c${i}`);
+    }
+    await expect(safety.admit('ABC123', 'extra', 'sx', 'cx')).rejects.toThrow('6 participantes');
+    expect(db.state.participants).toHaveLength(6);
+  });
+  it('preserves the configured global voice-minute ceiling atomically', async () => {
+    process.env.BETA_DAILY_VOICE_MINUTES = '180';
+    await safety.admit('ABC123', 'owner', 'sid', 'conn');
+    db.state.reservedMinutes = 179;
+    await expect(safety.voiceDeadline('ABC123', 'owner', 'sid')).resolves.toBeGreaterThan(0);
+    expect(db.state.reservedMinutes).toBe(180);
+    now += 30_000;
+    await expect(safety.voiceDeadline('ABC123', 'owner', 'sid')).rejects.toThrow('Cota diária de voz');
+    await expect(safety.heartbeat('conn')).resolves.toBeUndefined();
   });
   it('does not let owner A create a second room even with concurrent attempts', async () => {
     const results = await Promise.allSettled(['ABC123', 'DEF456'].map(id => safety.createRoom({ id, name: 'Test', ownerId: 'owner' })));
@@ -100,13 +135,13 @@ describe('Beta limits (transaction double)', () => {
   });
   it('caps room A at five without consuming room B capacity', async () => {
     for (let i = 0; i < TEST_LIMITS.participants; i++) await safety.admit('ABC123', `a${i}`, `sa${i}`, `ca${i}`);
-    await expect(safety.admit('ABC123', 'extra', 'sx', 'cx')).rejects.toThrow('cinco participantes');
+    await expect(safety.admit('ABC123', 'extra', 'sx', 'cx')).rejects.toThrow('5 participantes');
     await expect(safety.admit('DEF456', 'b0', 'sb0', 'cb0')).resolves.toBeUndefined();
   });
   it('gives room B its own five-participant limit', async () => {
     await safety.admit('ABC123', 'a0', 'sa0', 'ca0');
     for (let i = 0; i < TEST_LIMITS.participants; i++) await safety.admit('DEF456', `b${i}`, `sb${i}`, `cb${i}`);
-    await expect(safety.admit('DEF456', 'extra', 'sx', 'cx')).rejects.toThrow('cinco participantes');
+    await expect(safety.admit('DEF456', 'extra', 'sx', 'cx')).rejects.toThrow('5 participantes');
     await expect(safety.admit('ABC123', 'a1', 'sa1', 'ca1')).resolves.toBeUndefined();
   });
   it('rejects a duplicate account in the same room but permits that account in another room', async () => {
@@ -157,7 +192,7 @@ describe('Beta limits (transaction double)', () => {
     for (let i = 1; i < TEST_LIMITS.participants; i++) {
       await restarted.admit('ABC123', `u${i}`, `s${i}`, `c${i}`, new Set(['new', ...Array.from({ length: i }, (_, n) => `c${n + 1}`)]));
     }
-    await expect(restarted.admit('ABC123', 'extra', 's', 'extra', new Set(['new', 'extra', ...Array.from({ length: 4 }, (_, n) => `c${n + 1}`)]))).rejects.toThrow('cinco participantes');
+    await expect(restarted.admit('ABC123', 'extra', 's', 'extra', new Set(['new', 'extra', ...Array.from({ length: 4 }, (_, n) => `c${n + 1}`)]))).rejects.toThrow('5 participantes');
   });
   it('allows VTT reconnection after voice quota is exhausted', async () => {
     await safety.admit('ABC123', 'owner', 's', 'c');
