@@ -143,6 +143,7 @@ export default function CampaignsPage() {
           </div>
         </article>)}
       </div>
+      <p style={{ marginTop: 30, fontSize: 12 }}><a href="/legal/srd51" style={{ color: '#ffcf79' }}>Licença e atribuição SRD 5.1 (CC BY 4.0)</a></p>
     </div>
   </main>
 }
