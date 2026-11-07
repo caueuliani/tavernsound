@@ -127,7 +127,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     server.use(async (client, next) => {
       try {
         this.safety.rate(`connect:${client.handshake.address}`, 10);
-        if (this.safety.enabled && server.sockets.sockets.size >= 10) throw new Error();
+        if (this.safety.enabled && server.sockets.sockets.size >= Math.max(10, betaLimits().participants * 2)) throw new Error();
         const origin = client.handshake.headers.origin;
         if (origin && origin !== (process.env.FRONTEND_URL || 'http://localhost:3000')) throw new Error();
         client.data.session = await this.sessions.require(client.handshake.headers.cookie);
