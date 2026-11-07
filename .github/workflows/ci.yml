@@ -32,6 +32,10 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --include=dev --ignore-scripts
+      - name: Dependency vulnerability inventory
+        run: |
+          npm audit --json > /tmp/tavernsound-audit.json || true
+          node -e 'const a=require("/tmp/tavernsound-audit.json"); console.log("AUDIT_COUNTS", JSON.stringify(a.metadata?.vulnerabilities || {})); for (const [name,v] of Object.entries(a.vulnerabilities || {})) console.log("AUDIT_ITEM",JSON.stringify({name,severity:v.severity,isDirect:v.isDirect,via:v.via,range:v.range,fixAvailable:v.fixAvailable,effects:v.effects}));'
       - name: Generate Prisma Client
         run: npm run db:generate
       - name: API tests
