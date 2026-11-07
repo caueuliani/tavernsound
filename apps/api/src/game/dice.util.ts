@@ -6,7 +6,7 @@ export interface DiceRequest {
   quantity: number;
   sides: number;
   modifier: number;
-  mode: 'normal' | 'advantage' | 'disadvantage';
+  mode?: 'normal' | 'advantage' | 'disadvantage';
 }
 
 export function parseDiceRequest(input: unknown): DiceRequest | null {
