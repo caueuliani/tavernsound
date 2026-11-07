@@ -15,13 +15,14 @@ export default function AmbientSound() {
   const contextRef = useRef<AudioContext | null>(null)
   const sourceRef = useRef<AudioBufferSourceNode | null>(null)
   const volumeRef = useRef<GainNode | null>(null)
+  const trackGainRef = useRef(1)
   const [ambience, setAmbience] = useState<Ambience>('off')
   const [volume, setVolume] = useState(35)
   const [error, setError] = useState('')
 
   useEffect(() => {
     const gain = volumeRef.current
-    if (gain && contextRef.current) gain.gain.setTargetAtTime(volume / 100, contextRef.current.currentTime, 0.03)
+    if (gain && contextRef.current) gain.gain.setTargetAtTime((volume / 100) * trackGainRef.current, contextRef.current.currentTime, 0.03)
   }, [volume])
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export default function AmbientSound() {
       }
       await context.resume()
       const settings = AMBIENCES[next]
+      trackGainRef.current = settings.gain
       // Two seconds of generated mono noise looped locally. No media bandwidth.
       const length = Math.floor(context.sampleRate * 2)
       const buffer = context.createBuffer(1, length, context.sampleRate)
