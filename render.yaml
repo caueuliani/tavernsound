@@ -18,6 +18,10 @@ services:
         value: beta
       - key: TEST_MODE
         value: "true"
+      # Optional closed-beta capacity overrides must be set explicitly in Render.
+      # BETA_MAX_PARTICIPANTS: 5..12 (including GM).
+      # BETA_DAILY_VOICE_MINUTES: 60..1440 aggregate participant-minutes.
+      # Leave unset until Agora allowance and desired room size are verified.
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL

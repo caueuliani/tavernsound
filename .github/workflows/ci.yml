@@ -1,0 +1,50 @@
+name: TavernSound CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tavernsound-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+      SESSION_SECRET: "ci-only-not-for-production-0123456789abcdef"
+      INTERNAL_API_SECRET: "ci-only-internal-secret-0123456789abcdef"
+      APP_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=dev --ignore-scripts
+      - name: Production dependency security gate
+        run: npm audit --omit=dev --audit-level=low
+      - name: Dependency vulnerability inventory
+        run: |
+          npm audit --json > /tmp/tavernsound-audit.json || true
+          node -e 'const a=require("/tmp/tavernsound-audit.json"); console.log("AUDIT_COUNTS", JSON.stringify(a.metadata?.vulnerabilities || {})); for (const [name,v] of Object.entries(a.vulnerabilities || {})) console.log("AUDIT_ITEM",JSON.stringify({name,severity:v.severity,isDirect:v.isDirect,via:v.via,range:v.range,fixAvailable:v.fixAvailable,effects:v.effects}));'
+      - name: Generate Prisma Client
+        run: npm run db:generate
+      - name: API tests
+        run: npm test --workspace=api -- --runInBand
+      - name: Proxy tests
+        run: npm run test:proxy
+      - name: API and web builds
+        run: npm run build

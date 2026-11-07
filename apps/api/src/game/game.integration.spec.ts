@@ -17,6 +17,8 @@ describe('Socket and HTTP authentication integration (in-memory database double)
   const stored = new Map<string, any>();
   const previousSecret = process.env.SESSION_SECRET;
   const previousOrigin = process.env.FRONTEND_URL;
+  const previousAgoraId = process.env.AGORA_APP_ID;
+  const previousAgoraCertificate = process.env.AGORA_APP_CERTIFICATE;
   let budget = budgetDatabase();
   const prisma = {
     $transaction: (action: any) => budget.$transaction(action),
@@ -39,6 +41,9 @@ describe('Socket and HTTP authentication integration (in-memory database double)
   beforeAll(async () => {
     process.env.SESSION_SECRET = 'integration-test-secret';
     process.env.FRONTEND_URL = 'http://localhost:3000';
+    // Fake credentials exercise authorization and lease checks without Agora network calls.
+    process.env.AGORA_APP_ID = 'ci-integration-placeholder';
+    process.env.AGORA_APP_CERTIFICATE = 'ci-integration-placeholder';
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(PrismaService).useValue(prisma).compile();
     app = module.createNestApplication();
@@ -51,6 +56,8 @@ describe('Socket and HTTP authentication integration (in-memory database double)
     await app?.close();
     if (previousSecret === undefined) delete process.env.SESSION_SECRET; else process.env.SESSION_SECRET = previousSecret;
     if (previousOrigin === undefined) delete process.env.FRONTEND_URL; else process.env.FRONTEND_URL = previousOrigin;
+    if (previousAgoraId === undefined) delete process.env.AGORA_APP_ID; else process.env.AGORA_APP_ID = previousAgoraId;
+    if (previousAgoraCertificate === undefined) delete process.env.AGORA_APP_CERTIFICATE; else process.env.AGORA_APP_CERTIFICATE = previousAgoraCertificate;
   });
 
   function client(cookie?: string, origin = 'http://localhost:3000') {

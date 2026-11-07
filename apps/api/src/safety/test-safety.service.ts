@@ -2,7 +2,7 @@ import { ForbiddenException, HttpException, Injectable, ServiceUnavailableExcept
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { TEST_LIMITS, testMode } from './test-policy';
+import { TEST_LIMITS, betaLimits, testMode } from './test-policy';
 
 type Lease = { roomId: string; connectionId: string; userId: string; sessionHash: string; expiresAt: number; voiceUntil?: number };
 type Budget = { id: string; day: string; operations: number; reservedMinutes: number; roomId: string | null; endsAt: Date | null; participants: Prisma.JsonValue };
@@ -12,7 +12,7 @@ export class TestSafetyService {
   private rates = new Map<string, { count: number; until: number }>();
   get enabled() { return testMode(); }
 
-  constructor(private readonly prisma: PrismaService) { testMode(); }
+  constructor(private readonly prisma: PrismaService) { testMode(); betaLimits(); }
 
   rate(key: string, limit: number, windowMs = 60_000): void {
     if (!this.enabled) return;
@@ -84,7 +84,7 @@ export class TestSafetyService {
       const leases = this.leases(state, now).filter(p => p.connectionId !== connectionId && (!activeConnections || activeConnections.has(p.connectionId)));
       const roomLeases = leases.filter(p => p.roomId === roomId);
       if (roomLeases.some(p => p.userId === userId)) throw new ForbiddenException('Esta conta já está conectada. Feche a outra conexão ou aguarde 90 segundos.');
-      if (roomLeases.length >= TEST_LIMITS.participants) throw new ForbiddenException('A sala de testes permite até cinco participantes.');
+      if (roomLeases.length >= betaLimits().participants) throw new ForbiddenException(`A sala de testes permite até ${betaLimits().participants} participantes.`);
       leases.push({ roomId, connectionId, userId, sessionHash: this.hash(sid), expiresAt: now + TEST_LIMITS.leaseMs });
       state.participants = leases;
     });
@@ -119,7 +119,7 @@ export class TestSafetyService {
       }
       const midnight = Date.parse(new Date(now).toISOString().slice(0, 10)) + 86_400_000;
       if (!lease.voiceUntil || lease.voiceUntil - now <= 30_000) {
-        if (state.reservedMinutes >= TEST_LIMITS.dailyMinutes) {
+        if (state.reservedMinutes >= betaLimits().dailyMinutes) {
           throw new ForbiddenException('Cota diária de voz esgotada. A mesa continua disponível; retorne após 00:00 UTC para usar áudio.');
         }
         state.reservedMinutes++;
