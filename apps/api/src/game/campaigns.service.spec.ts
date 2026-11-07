@@ -28,6 +28,20 @@ describe('Campaign integration fixes', () => {
     prisma.room.findUnique.mockResolvedValue({ id: 'room', ownerId: 'gm', campaignId: 'another' });
     await expect(service.linkRoom('camp', 'room', 'gm')).rejects.toThrow('outra campanha');
   });
+  it('blocks switching a campaign game system when rooms or characters exist', async () => {
+    const prisma = {
+      campaign: {
+        findUnique: jest.fn().mockResolvedValue({ ownerId: 'owner', gameSystemId: 'dnd5e-2014-srd51' }),
+        update: jest.fn(),
+      },
+      character: { count: jest.fn().mockResolvedValue(1) },
+      room: { count: jest.fn().mockResolvedValue(0) },
+    };
+    const service = new CampaignsService(prisma as any);
+    await expect(service.updateCampaign('campaign', 'owner', { gameSystemId: 'generic' })).rejects.toThrow('Não é possível trocar');
+    expect(prisma.campaign.update).not.toHaveBeenCalled();
+  });
+
   it('cannot change campaign ownership through update payload', async () => {
     const prisma = { campaign: { findUnique: jest.fn().mockResolvedValue({ ownerId: 'owner' }), update: jest.fn().mockResolvedValue({}) } };
     await new CampaignsService(prisma as any).updateCampaign('campaign', 'owner', { name: 'Name', ownerId: 'other' } as any);
