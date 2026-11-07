@@ -36,3 +36,27 @@ export const TEST_LIMITS = Object.freeze({
   heartbeatMs: 30_000,
   lobbyMs: 60_000,
 });
+
+/**
+ * Closed beta overrides. The limits are intentionally capped so a mistaken
+ * deployment variable cannot silently create unlimited Agora consumption.
+ * dailyMinutes counts participant-minutes across ALL beta rooms, not wall-clock
+ * minutes. A 3-hour session with 6 connected voices may consume ~1080.
+ */
+export function betaLimits() {
+  const configured = (key: string, fallback: number, ceiling: number) => {
+    const raw = process.env[key];
+    if (raw === undefined || raw === '') return fallback;
+    if (!/^[1-9]\d*$/.test(raw)) throw new Error(`${key} must be a positive integer`);
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < fallback || value > ceiling) {
+      throw new Error(`${key} must be between ${fallback} and ${ceiling}`);
+    }
+    return value;
+  };
+  return {
+    ...TEST_LIMITS,
+    participants: configured('BETA_MAX_PARTICIPANTS', TEST_LIMITS.participants, 12),
+    dailyMinutes: configured('BETA_DAILY_VOICE_MINUTES', TEST_LIMITS.dailyMinutes, 1440),
+  };
+}
