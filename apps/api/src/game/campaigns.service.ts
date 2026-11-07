@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateCampaignDto,
@@ -14,6 +14,22 @@ import {
   CampaignStatus,
 } from './dto/campaign.dto';
 import { randomBytes } from 'crypto';
+import { gameSystemId } from './game-systems';
+
+function validateCampaignName(name: unknown): string {
+  if (typeof name !== 'string' || name.trim().length < 1 || name.trim().length > 100) {
+    throw new BadRequestException('Nome da campanha deve conter entre 1 e 100 caracteres.');
+  }
+  return name.trim();
+}
+
+function validateCampaignDescription(description: unknown): string | undefined {
+  if (description === undefined || description === null) return undefined;
+  if (typeof description !== 'string' || description.length > 1000) {
+    throw new BadRequestException('Descrição da campanha deve ter até 1000 caracteres.');
+  }
+  return description;
+}
 
 @Injectable()
 export class CampaignsService {
@@ -22,10 +38,11 @@ export class CampaignsService {
   async createCampaign(userId: string, dto: CreateCampaignDto): Promise<CampaignDto> {
     const campaign = await this.prisma.campaign.create({
       data: {
-        name: dto.name,
-        description: dto.description,
+        name: validateCampaignName(dto?.name),
+        description: validateCampaignDescription(dto?.description),
         ownerId: userId,
         status: CampaignStatus.ACTIVE,
+        gameSystemId: gameSystemId(dto.gameSystemId),
       },
     });
 
@@ -109,9 +126,23 @@ export class CampaignsService {
       throw new ForbiddenException('Apenas o dono pode editar a campanha');
     }
 
+    if (dto.gameSystemId !== undefined && gameSystemId(dto.gameSystemId) !== (campaign.gameSystemId ?? 'generic')) {
+      const [characterCount, roomCount] = await Promise.all([
+        this.prisma.character.count({ where: { campaignId } }),
+        this.prisma.room.count({ where: { campaignId } }),
+      ]);
+      if (characterCount > 0 || roomCount > 0) {
+        throw new ConflictException('Não é possível trocar o sistema enquanto houver personagens ou salas vinculadas.');
+      }
+    }
+
     const updated = await this.prisma.campaign.update({
       where: { id: campaignId },
-      data: { name: dto.name, description: dto.description, status: dto.status },
+      data: { name: dto.name === undefined ? undefined : validateCampaignName(dto.name),
+        description: dto.description === undefined ? undefined : validateCampaignDescription(dto.description),
+        status: dto.status,
+        ...(dto.gameSystemId !== undefined ? { gameSystemId: gameSystemId(dto.gameSystemId) } : {}),
+      },
       include: {
         _count: {
           select: {
@@ -124,6 +155,19 @@ export class CampaignsService {
     });
 
     return this.mapToCampaignDto(updated, updated._count);
+  }
+
+  async linkRoom(campaignId: string, roomId: string, actorId: string) {
+    const campaign = await this.prisma.campaign.findUnique({ where: { id: campaignId } });
+    if (!campaign) throw new NotFoundException('Campanha não encontrada.');
+    if (campaign.ownerId !== actorId) throw new ForbiddenException('Apenas o mestre pode vincular salas.');
+    const room = await this.prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) throw new NotFoundException('Sala não encontrada.');
+    if (room.ownerId !== actorId) throw new ForbiddenException('Esta sala pertence a outra conta.');
+    if (room.campaignId && room.campaignId !== campaignId) {
+      throw new ConflictException('A sala já pertence a outra campanha.');
+    }
+    return this.prisma.room.update({ where: { id: roomId }, data: { campaignId } });
   }
 
   async deleteCampaign(campaignId: string, userId: string): Promise<void> {
@@ -370,6 +414,7 @@ export class CampaignsService {
   private mapToCampaignDto(campaign: any, counts?: any): CampaignDto {
     return {
       id: campaign.id,
+      gameSystemId: campaign.gameSystemId ?? 'generic',
       name: campaign.name,
       description: campaign.description,
       status: campaign.status,

@@ -12,6 +12,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { CampaignsService } from './campaigns.service';
+import { listGameSystems } from './game-systems';
 import type {
   CreateCampaignDto,
   UpdateCampaignDto,
@@ -26,6 +27,11 @@ import { SessionAuthGuard } from '../auth/session-auth.guard';
 @UseGuards(SessionAuthGuard)
 export class CampaignsController {
   constructor(private readonly campaignsService: CampaignsService) {}
+
+  @Get('systems')
+  listSystems() {
+    return listGameSystems();
+  }
 
   @Post()
   async create(@Request() req, @Body() dto: CreateCampaignDto) {
@@ -45,6 +51,11 @@ export class CampaignsController {
   @Put(':id')
   async update(@Param('id') id: string, @Request() req, @Body() dto: UpdateCampaignDto) {
     return this.campaignsService.updateCampaign(id, req.user.id, dto);
+  }
+
+  @Put(':id/rooms/:roomId')
+  linkRoom(@Param('id') id: string, @Param('roomId') roomId: string, @Request() req) {
+    return this.campaignsService.linkRoom(id, roomId, req.user.id);
   }
 
   @Delete(':id')

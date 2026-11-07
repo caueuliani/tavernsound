@@ -45,6 +45,7 @@ model User {
   diceRolls     DiceRoll[]
   ownedCampaigns Campaign[] @relation("CampaignOwner")
   campaignMemberships CampaignMember[] @relation("CampaignMembership")
+  characters    Character[]
   
   @@index([email])
 }
@@ -222,6 +223,7 @@ enum CampaignStatus {
 
 model Campaign {
   id            String         @id @default(cuid())
+  gameSystemId  String         @default("generic")
   name          String
   description   String?
   status        CampaignStatus @default(ACTIVE)
@@ -238,9 +240,28 @@ model Campaign {
   rooms         Room[]
   members       CampaignMember[]
   sessions      GameSession[]
+  characters    Character[]
   
   @@index([ownerId])
   @@index([inviteCode])
+}
+
+// Versioned user-owned character records. Only trusted API flows may update sheets.
+model Character {
+  id           String   @id @default(cuid())
+  campaignId   String
+  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  gameSystemId String
+  sheet        Json
+  revision     Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([userId])
 }
 
 model CampaignMember {

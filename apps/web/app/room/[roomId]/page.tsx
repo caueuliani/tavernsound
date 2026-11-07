@@ -3,6 +3,7 @@
 import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import Grid from '../../components/Grid'
+import { apiUrl } from '../../lib/api-url'
 
 interface SessionUser {
   id: string
@@ -17,6 +18,7 @@ export default function RoomPage() {
 
   const [playerCount, setPlayerCount] = useState(0)
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null)
+  const [campaignId, setCampaignId] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/auth/me')
@@ -24,6 +26,15 @@ export default function RoomPage() {
       .then(data => { if (data.user) setCurrentUser(data.user) })
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    fetch(apiUrl('/rooms'), { credentials: 'include', cache: 'no-store' })
+      .then(response => response.ok ? response.json() : [])
+      .then(data => {
+        const room = Array.isArray(data) ? data.find((item: { id: string }) => item.id === roomId) : null
+        if (typeof room?.campaignId === 'string') setCampaignId(room.campaignId)
+      }).catch(() => {})
+  }, [roomId])
 
   useEffect(() => {
     const handlePlayerCount = (event: any) => {
@@ -68,6 +79,9 @@ export default function RoomPage() {
           </div>
         </div>
 
+        {campaignId && <a href={`/campaigns/${campaignId}/characters`} target="_blank" rel="noopener noreferrer" style={{ color: '#ffcf80', fontSize: '0.85rem' }}>
+          📜 Fichas D&D da campanha
+        </a>}
         {currentUser && (
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '12px', minWidth: 0, fontSize: '0.8rem', color: '#f4e4bc' }}>
             <span style={{ opacity: 0.6, overflowWrap: 'anywhere' }}>

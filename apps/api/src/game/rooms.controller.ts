@@ -19,7 +19,7 @@ export class RoomsController {
     const user = await this.sessions.require(req.headers.cookie);
     const rooms = await this.prisma.room.findMany({
       where: { OR: [{ ownerId: user.id }, { members: { some: { userId: user.id, leftAt: null } } }] },
-      select: { id: true, name: true, ownerId: true }, orderBy: { updatedAt: 'desc' }, take: 100,
+      select: { id: true, name: true, ownerId: true, campaignId: true }, orderBy: { updatedAt: 'desc' }, take: 100,
     });
     return rooms.map(room => ({ ...room, isOwner: room.ownerId === user.id }));
   }

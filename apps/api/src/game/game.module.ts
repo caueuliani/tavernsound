@@ -8,9 +8,11 @@ import { TokenImageController } from './token-image.controller';
 import { SceneryTokenController } from './scenery-token.controller';
 import { CampaignsService } from './campaigns.service';
 import { CampaignsController } from './campaigns.controller';
+import { CharactersController } from './characters.controller';
+import { CharactersService } from './characters.service';
 
 @Module({
-  providers: [GameGateway, RoomAccessService, CampaignsService],
-  controllers: [GameController, RoomsController, SceneController, TokenImageController, SceneryTokenController, CampaignsController],
+  providers: [GameGateway, RoomAccessService, CampaignsService, CharactersService],
+  controllers: [GameController, RoomsController, SceneController, TokenImageController, SceneryTokenController, CampaignsController, CharactersController],
 })
 export class GameModule {}
