@@ -12,6 +12,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { CampaignsService } from './campaigns.service';
+import { listGameSystems } from './game-systems';
 import type {
   CreateCampaignDto,
   UpdateCampaignDto,
@@ -26,6 +27,11 @@ import { SessionAuthGuard } from '../auth/session-auth.guard';
 @UseGuards(SessionAuthGuard)
 export class CampaignsController {
   constructor(private readonly campaignsService: CampaignsService) {}
+
+  @Get('systems')
+  listSystems() {
+    return listGameSystems();
+  }
 
   @Post()
   async create(@Request() req, @Body() dto: CreateCampaignDto) {
