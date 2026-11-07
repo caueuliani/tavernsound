@@ -41,7 +41,7 @@ describe('Authoritative dice', () => {
   it('calculates roll values and formatted formula from server RNG', () => {
     const random = jest.fn().mockReturnValueOnce(4).mockReturnValueOnce(7);
     expect(rollDice({ quantity: 2, sides: 20, modifier: 3 }, random)).toEqual({
-      formula: '2d20+3', rolls: [4, 7], result: 14, quantity: 2, modifier: 3,
+      formula: '2d20+3', rolls: [4, 7], result: 14, quantity: 2, modifier: 3, mode: 'normal',
     });
     expect(random).toHaveBeenCalledTimes(2);
     expect(random).toHaveBeenCalledWith(20);
