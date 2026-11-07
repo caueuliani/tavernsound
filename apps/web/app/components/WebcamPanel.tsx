@@ -32,6 +32,7 @@ function VideoTile({ track, label, mirrored = false }: VideoTileProps) {
 interface WebcamPanelProps {
   connected: boolean
   cameraEnabled: boolean
+  cameraBusy: boolean
   cameraError: string
   localCameraTrack: any
   remoteVideoTracks: Map<string, any>
@@ -39,15 +40,15 @@ interface WebcamPanelProps {
 }
 
 export default function WebcamPanel({
-  connected, cameraEnabled, cameraError, localCameraTrack, remoteVideoTracks, toggleCamera,
+  connected, cameraEnabled, cameraBusy, cameraError, localCameraTrack, remoteVideoTracks, toggleCamera,
 }: WebcamPanelProps) {
   return <section aria-label="Webcams da mesa" style={{ margin: '0.75rem 0', padding: '0.75rem', background: '#261911', border: '1px solid #6e4826', borderRadius: 10 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
       <strong>📹 Webcams</strong>
-      <button type="button" disabled={!connected} aria-pressed={cameraEnabled}
+      <button type="button" disabled={!connected || cameraBusy} aria-pressed={cameraEnabled}
         onClick={() => void toggleCamera()}
         style={{ padding: '0.4rem 0.8rem', borderRadius: 7, background: cameraEnabled ? '#60312b' : '#42311b', color: '#ffe1aa', border: '1px solid #96633e', cursor: connected ? 'pointer' : 'not-allowed' }}>
-        {cameraEnabled ? 'Desligar minha câmera' : 'Ativar minha câmera'}
+        {cameraBusy ? 'Aguarde…' : cameraEnabled ? 'Desligar minha câmera' : 'Ativar minha câmera'}
       </button>
       <span style={{ fontSize: 12, opacity: 0.8 }}>Câmera desligada por padrão. Somente você pode ativá-la.</span>
     </div>
