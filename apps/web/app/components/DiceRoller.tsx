@@ -3,7 +3,7 @@
 import { useState } from 'react'
 
 interface DiceRollerProps {
-  onRoll: (quantity: number, sides: number, modifier: number) => void
+  onRoll: (quantity: number, sides: number, modifier: number, mode: 'normal' | 'advantage' | 'disadvantage') => void
   playerName: string
 }
 
@@ -21,13 +21,14 @@ export default function DiceRoller({ onRoll, playerName }: DiceRollerProps) {
   const [quantity, setQuantity] = useState(1)
   const [sides, setSides] = useState(20)
   const [modifier, setModifier] = useState(0)
+  const [mode, setMode] = useState<'normal' | 'advantage' | 'disadvantage'>('normal')
   const [isRolling, setIsRolling] = useState(false)
 
   const rollDice = () => {
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 30 || !Number.isInteger(modifier) || modifier < -1000 || modifier > 1000) return
     setIsRolling(true)
 
-    onRoll(quantity, sides, modifier)
+    onRoll(quantity, sides, modifier, quantity === 1 && sides === 20 ? mode : 'normal')
     setTimeout(() => setIsRolling(false), 500)
   }
 
@@ -95,6 +96,16 @@ export default function DiceRoller({ onRoll, playerName }: DiceRollerProps) {
         </div>
       </div>
 
+      {quantity === 1 && sides === 20 && <label style={{ color: '#f4e4bc', display: 'block', marginBottom: '0.8rem' }}>
+        Rolagem d20
+        <select value={mode} onChange={e => setMode(e.target.value as 'normal' | 'advantage' | 'disadvantage')}
+          style={{ marginLeft: '0.5rem', background: '#1a0f0a', color: '#ffcf77', padding: '0.5rem', border: '1px solid #3d2b1f', borderRadius: 8 }}>
+          <option value="normal">Normal</option>
+          <option value="advantage">Vantagem (2d20, maior)</option>
+          <option value="disadvantage">Desvantagem (2d20, menor)</option>
+        </select>
+      </label>}
+
       {/* Preview da fórmula */}
       <div style={{
         padding: '0.5rem',
@@ -107,7 +118,7 @@ export default function DiceRoller({ onRoll, playerName }: DiceRollerProps) {
         color: '#ff9d00',
         border: '1px dashed #3d2b1f'
       }}>
-        {quantity}d{sides}{modifier !== 0 ? (modifier > 0 ? `+${modifier}` : modifier) : ''}
+        {quantity}d{sides}{modifier !== 0 ? (modifier > 0 ? `+${modifier}` : modifier) : ''}{quantity === 1 && sides === 20 && mode !== 'normal' ? ` (${mode === 'advantage' ? 'vantagem' : 'desvantagem'})` : ''}
       </div>
 
       <button
