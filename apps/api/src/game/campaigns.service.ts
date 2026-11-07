@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateCampaignDto,
@@ -16,6 +16,21 @@ import {
 import { randomBytes } from 'crypto';
 import { gameSystemId } from './game-systems';
 
+function validateCampaignName(name: unknown): string {
+  if (typeof name !== 'string' || name.trim().length < 1 || name.trim().length > 100) {
+    throw new BadRequestException('Nome da campanha deve conter entre 1 e 100 caracteres.');
+  }
+  return name.trim();
+}
+
+function validateCampaignDescription(description: unknown): string | undefined {
+  if (description === undefined || description === null) return undefined;
+  if (typeof description !== 'string' || description.length > 1000) {
+    throw new BadRequestException('Descrição da campanha deve ter até 1000 caracteres.');
+  }
+  return description;
+}
+
 @Injectable()
 export class CampaignsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -23,8 +38,8 @@ export class CampaignsService {
   async createCampaign(userId: string, dto: CreateCampaignDto): Promise<CampaignDto> {
     const campaign = await this.prisma.campaign.create({
       data: {
-        name: dto.name,
-        description: dto.description,
+        name: validateCampaignName(dto?.name),
+        description: validateCampaignDescription(dto?.description),
         ownerId: userId,
         status: CampaignStatus.ACTIVE,
         gameSystemId: gameSystemId(dto.gameSystemId),
@@ -113,7 +128,9 @@ export class CampaignsService {
 
     const updated = await this.prisma.campaign.update({
       where: { id: campaignId },
-      data: { name: dto.name, description: dto.description, status: dto.status,
+      data: { name: dto.name === undefined ? undefined : validateCampaignName(dto.name),
+        description: dto.description === undefined ? undefined : validateCampaignDescription(dto.description),
+        status: dto.status,
         ...(dto.gameSystemId !== undefined ? { gameSystemId: gameSystemId(dto.gameSystemId) } : {}),
       },
       include: {
