@@ -50,6 +50,13 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
   const clientRef = useRef<any>(null)
   const localTrackRef = useRef<any>(null)
+  const cameraTrackRef = useRef<any>(null)
+  const [cameraEnabled, setCameraEnabled] = useState(false)
+  const cameraBusyRef = useRef(false)
+  const [cameraBusy, setCameraBusy] = useState(false)
+  const [cameraError, setCameraError] = useState('')
+  const [localCameraTrack, setLocalCameraTrack] = useState<any>(null)
+  const [remoteVideoTracks, setRemoteVideoTracks] = useState<Map<string, any>>(new Map())
   const audioContextRef = useRef<AudioContext | null>(null)
   const remoteAudioNodesRef = useRef<Map<string, RemoteAudioNode>>(new Map())
 
@@ -262,6 +269,17 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         }
 
         client.on('user-published', async (user: any, mediaType: string) => {
+          if (mediaType === 'video') {
+            try {
+              await client.subscribe(user, mediaType)
+              if (!cancelled && user.videoTrack) {
+                setRemoteVideoTracks(previous => new Map(previous).set(user.uid.toString(), user.videoTrack))
+              }
+            } catch (error) {
+              if (!cancelled) console.warn('Falha ao receber vídeo remoto:', error)
+            }
+            return
+          }
           if (mediaType === 'audio') {
             await client.subscribe(user, mediaType)
             if (cancelled) return
@@ -311,7 +329,15 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
           }
         })
 
-        client.on('user-unpublished', (user: any) => {
+        client.on('user-unpublished', (user: any, mediaType: string) => {
+          if (mediaType === 'video') {
+            setRemoteVideoTracks(previous => {
+              const next = new Map(previous)
+              next.delete(user.uid.toString())
+              return next
+            })
+            return
+          }
           const audioNode = remoteAudioNodesRef.current.get(user.uid.toString())
           if (audioNode) {
             audioNode.source.disconnect()
@@ -324,6 +350,14 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
             const newSet = new Set(prev)
             newSet.delete(user.uid.toString())
             return newSet
+          })
+        })
+
+        client.on('user-left', (user: any) => {
+          setRemoteVideoTracks(previous => {
+            const next = new Map(previous)
+            next.delete(user.uid.toString())
+            return next
           })
         })
 
@@ -435,6 +469,13 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       setRemoteUsers(new Set())
       setPlaybackBlocked(false)
 
+      if (cameraTrackRef.current) {
+        cameraTrackRef.current.close()
+        cameraTrackRef.current = null
+      }
+      setCameraEnabled(false)
+      setLocalCameraTrack(null)
+      setRemoteVideoTracks(new Map())
       if (localTrackRef.current) {
         localTrackRef.current.close()
       }
@@ -451,6 +492,55 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   useEffect(() => {
     updateSpatialAudio()
   }, [isHost, myToken?.x, myToken?.y, walls, isDeafened])
+
+  const toggleCamera = async () => {
+    if (cameraBusyRef.current) return
+    cameraBusyRef.current = true
+    setCameraBusy(true)
+    setCameraError('')
+    try {
+      const client = clientRef.current
+      if (!client || !isConnected) {
+        setCameraError('Conecte o áudio da mesa antes de ativar a câmera.')
+        return
+      }
+      if (cameraTrackRef.current) {
+        const track = cameraTrackRef.current
+        cameraTrackRef.current = null
+        setCameraEnabled(false)
+        setLocalCameraTrack(null)
+        try { await client.unpublish([track]) }
+        catch { /* Cleanup must still run if RTC disconnected. */ }
+        finally { track.close() }
+        return
+      }
+      let track: any = null
+      try {
+        const AgoraRTC = (await import('agora-rtc-sdk-ng')).default
+        // Video capture is only created after the player's explicit button action.
+        track = await AgoraRTC.createCameraVideoTrack({ encoderConfig: '360p_4' })
+        if (clientRef.current !== client || client.connectionState !== 'CONNECTED') {
+          track.close()
+          return
+        }
+        await client.publish([track])
+        if (clientRef.current !== client) {
+          track.close()
+          return
+        }
+        cameraTrackRef.current = track
+        setLocalCameraTrack(track)
+        setCameraEnabled(true)
+      } catch (error) {
+        track?.close()
+        setCameraError('Câmera indisponível. Confira a permissão e tente novamente.')
+        console.warn('Falha ao ativar webcam:', error)
+      }
+    } finally {
+      cameraBusyRef.current = false
+      setCameraBusy(false)
+    }
+  }
 
   const toggleMute = () => {
     if (localTrackRef.current) {
@@ -485,6 +575,12 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
     toggleMute,
     toggleDeafen,
     remoteUsers: Array.from(remoteUsers),
+    cameraEnabled,
+    cameraBusy,
+    cameraError,
+    localCameraTrack,
+    remoteVideoTracks,
+    toggleCamera,
     updateSpatialAudio,
   }
 }
