@@ -48,7 +48,7 @@ export default function DiceHistory({ rolls, myPlayerId }: DiceHistoryProps) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         {rolls.slice().reverse().map((roll, idx) => {
           const isOwn = roll.playerId === myPlayerId
-          const isCritical = roll.rolls.some(r => r === Math.max(...roll.rolls)) && roll.rolls.length === 1
+          const isNaturalTwenty = /^1d20(?:[+-]\\d+)?(?: \\((?:vantagem|desvantagem)\\))?$/.test(roll.formula) && roll.result - roll.modifier === 20
 
           return (
             <div
@@ -82,11 +82,11 @@ export default function DiceHistory({ rolls, myPlayerId }: DiceHistoryProps) {
                 <div style={{
                   fontSize: '1.4rem',
                   fontWeight: 'bold',
-                  color: isCritical ? '#ffd700' : (isOwn ? '#ff9d00' : '#f4e4bc'),
-                  textShadow: isCritical ? '0 0 10px rgba(255,215,0,0.5)' : 'none'
+                  color: isNaturalTwenty ? '#ffd700' : (isOwn ? '#ff9d00' : '#f4e4bc'),
+                  textShadow: isNaturalTwenty ? '0 0 10px rgba(255,215,0,0.5)' : 'none'
                 }}>
                   {roll.result}
-                  {isCritical && ' ✨'}
+                  {isNaturalTwenty && ' 🎯'}
                 </div>
               </div>
             </div>

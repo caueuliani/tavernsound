@@ -147,8 +147,8 @@ export default function Grid({ roomId }: GridProps) {
     },
   })
 
-  const handleRollDice = (quantity: number, sides: number, modifier: number) => {
-    socketRef.current?.emit('roll-dice', { quantity, sides, modifier })
+  const handleRollDice = (quantity: number, sides: number, modifier: number, mode: 'normal' | 'advantage' | 'disadvantage') => {
+    socketRef.current?.emit('roll-dice', { quantity, sides, modifier, mode })
   }
   const handleSaveHp = () => {
     if (!tokenEditor || !socketRef.current) return
