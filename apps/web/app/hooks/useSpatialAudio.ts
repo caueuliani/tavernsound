@@ -52,6 +52,8 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   const localTrackRef = useRef<any>(null)
   const cameraTrackRef = useRef<any>(null)
   const [cameraEnabled, setCameraEnabled] = useState(false)
+  const cameraBusyRef = useRef(false)
+  const [cameraBusy, setCameraBusy] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const [localCameraTrack, setLocalCameraTrack] = useState<any>(null)
   const [remoteVideoTracks, setRemoteVideoTracks] = useState<Map<string, any>>(new Map())
@@ -492,39 +494,51 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   }, [isHost, myToken?.x, myToken?.y, walls, isDeafened])
 
   const toggleCamera = async () => {
+    if (cameraBusyRef.current) return
+    cameraBusyRef.current = true
+    setCameraBusy(true)
     setCameraError('')
-    const client = clientRef.current
-    if (!client || !isConnected) {
-      setCameraError('Conecte o áudio da mesa antes de ativar a câmera.')
-      return
-    }
-    if (cameraTrackRef.current) {
-      const track = cameraTrackRef.current
-      cameraTrackRef.current = null
-      setCameraEnabled(false)
-      setLocalCameraTrack(null)
-      try { await client.unpublish([track]) }
-      catch { /* Cleanup is still required even if RTC disconnected. */ }
-      finally { track.close() }
-      return
-    }
-    let track: any = null
     try {
-      const AgoraRTC = (await import('agora-rtc-sdk-ng')).default
-      // Never call getUserMedia or publish video without a direct button press.
-      track = await AgoraRTC.createCameraVideoTrack({ encoderConfig: '360p_4' })
-      if (clientRef.current !== client || !clientRef.current) {
-        track.close()
+      const client = clientRef.current
+      if (!client || !isConnected) {
+        setCameraError('Conecte o áudio da mesa antes de ativar a câmera.')
         return
       }
-      await client.publish([track])
-      cameraTrackRef.current = track
-      setLocalCameraTrack(track)
-      setCameraEnabled(true)
-    } catch (error) {
-      track?.close()
-      setCameraError('Câmera indisponível. Confira a permissão e tente novamente.')
-      console.warn('Falha ao ativar webcam:', error)
+      if (cameraTrackRef.current) {
+        const track = cameraTrackRef.current
+        cameraTrackRef.current = null
+        setCameraEnabled(false)
+        setLocalCameraTrack(null)
+        try { await client.unpublish([track]) }
+        catch { /* Cleanup must still run if RTC disconnected. */ }
+        finally { track.close() }
+        return
+      }
+      let track: any = null
+      try {
+        const AgoraRTC = (await import('agora-rtc-sdk-ng')).default
+        // Video capture is only created after the player's explicit button action.
+        track = await AgoraRTC.createCameraVideoTrack({ encoderConfig: '360p_4' })
+        if (clientRef.current !== client || client.connectionState !== 'CONNECTED') {
+          track.close()
+          return
+        }
+        await client.publish([track])
+        if (clientRef.current !== client) {
+          track.close()
+          return
+        }
+        cameraTrackRef.current = track
+        setLocalCameraTrack(track)
+        setCameraEnabled(true)
+      } catch (error) {
+        track?.close()
+        setCameraError('Câmera indisponível. Confira a permissão e tente novamente.')
+        console.warn('Falha ao ativar webcam:', error)
+      }
+    } finally {
+      cameraBusyRef.current = false
+      setCameraBusy(false)
     }
   }
 
@@ -562,6 +576,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
     toggleDeafen,
     remoteUsers: Array.from(remoteUsers),
     cameraEnabled,
+    cameraBusy,
     cameraError,
     localCameraTrack,
     remoteVideoTracks,
