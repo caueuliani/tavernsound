@@ -11,6 +11,23 @@ describe('Campaign integration fixes', () => {
     await expect(new CampaignsService(prisma as any).getSessionsByCampaign('campaign', 'outsider')).rejects.toThrow('acesso');
     expect(prisma.gameSession.findMany).not.toHaveBeenCalled();
   });
+  it('only lets the same owner link a VTT room to a campaign', async () => {
+    const prisma = {
+      campaign: { findUnique: jest.fn().mockResolvedValue({ id: 'camp', ownerId: 'gm' }) },
+      room: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'room', ownerId: 'gm', campaignId: null }),
+        update: jest.fn().mockResolvedValue({ id: 'room', campaignId: 'camp' }),
+      },
+    };
+    const service = new CampaignsService(prisma as any);
+    await expect(service.linkRoom('camp', 'room', 'gm')).resolves.toMatchObject({ campaignId: 'camp' });
+    expect(prisma.room.update).toHaveBeenCalledWith({ where: { id: 'room' }, data: { campaignId: 'camp' } });
+    await expect(service.linkRoom('camp', 'room', 'intruder')).rejects.toThrow('Apenas o mestre');
+    prisma.room.findUnique.mockResolvedValue({ id: 'room', ownerId: 'other', campaignId: null });
+    await expect(service.linkRoom('camp', 'room', 'gm')).rejects.toThrow('outra conta');
+    prisma.room.findUnique.mockResolvedValue({ id: 'room', ownerId: 'gm', campaignId: 'another' });
+    await expect(service.linkRoom('camp', 'room', 'gm')).rejects.toThrow('outra campanha');
+  });
   it('cannot change campaign ownership through update payload', async () => {
     const prisma = { campaign: { findUnique: jest.fn().mockResolvedValue({ ownerId: 'owner' }), update: jest.fn().mockResolvedValue({}) } };
     await new CampaignsService(prisma as any).updateCampaign('campaign', 'owner', { name: 'Name', ownerId: 'other' } as any);
