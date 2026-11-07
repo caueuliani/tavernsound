@@ -16,9 +16,14 @@
     "db:generate": "prisma generate --schema apps/api/prisma/schema.prisma",
     "db:migrate": "prisma migrate deploy --schema apps/api/prisma/schema.prisma"
   },
-  "engines": { "node": ">=22.12.0 <25" },
+  "engines": {
+    "node": ">=22.12.0 <25"
+  },
   "overrides": {
-    "@prisma/config": { "deepmerge-ts": "^8.0.0" }
+    "@prisma/config": {
+      "deepmerge-ts": "^8.0.0"
+    },
+    "multer": "^2.5.0"
   },
   "devDependencies": {
     "prisma": "^6.19.2"
