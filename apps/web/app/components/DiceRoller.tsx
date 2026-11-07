@@ -3,7 +3,7 @@
 import { useState } from 'react'
 
 interface DiceRollerProps {
-  onRoll: (formula: string, result: number, rolls: number[], modifier: number) => void
+  onRoll: (quantity: number, sides: number, modifier: number) => void
   playerName: string
 }
 
@@ -24,18 +24,10 @@ export default function DiceRoller({ onRoll, playerName }: DiceRollerProps) {
   const [isRolling, setIsRolling] = useState(false)
 
   const rollDice = () => {
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 30 || !Number.isInteger(modifier) || modifier < -1000 || modifier > 1000) return
     setIsRolling(true)
 
-    const rolls: number[] = []
-    for (let i = 0; i < quantity; i++) {
-      rolls.push(Math.floor(Math.random() * sides) + 1)
-    }
-
-    const sum = rolls.reduce((a, b) => a + b, 0)
-    const result = sum + modifier
-    const formula = `${quantity}d${sides}${modifier !== 0 ? (modifier > 0 ? `+${modifier}` : modifier) : ''}`
-
-    onRoll(formula, result, rolls, modifier)
+    onRoll(quantity, sides, modifier)
     setTimeout(() => setIsRolling(false), 500)
   }
 
@@ -61,7 +53,7 @@ export default function DiceRoller({ onRoll, playerName }: DiceRollerProps) {
             <input
               type="number"
               value={idx === 0 ? quantity : modifier}
-              onChange={(e) => idx === 0 ? setQuantity(parseInt(e.target.value) || 1) : setModifier(parseInt(e.target.value) || 0)}
+              onChange={(e) => idx === 0 ? setQuantity(Math.max(1, Math.min(30, parseInt(e.target.value) || 1))) : setModifier(Math.max(-1000, Math.min(1000, parseInt(e.target.value) || 0)))}
               style={{
                 width: '60px',
                 padding: '0.5rem',
