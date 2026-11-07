@@ -53,6 +53,11 @@ export class CampaignsController {
     return this.campaignsService.updateCampaign(id, req.user.id, dto);
   }
 
+  @Put(':id/rooms/:roomId')
+  linkRoom(@Param('id') id: string, @Param('roomId') roomId: string, @Request() req) {
+    return this.campaignsService.linkRoom(id, roomId, req.user.id);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(@Param('id') id: string, @Request() req) {
