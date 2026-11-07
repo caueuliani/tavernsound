@@ -15,7 +15,7 @@ import { RoomAccessService } from './room-access.service';
 import { createHash, randomInt, randomUUID } from 'crypto';
 import { AudioPosition, SpatialAudioSettings } from './dto/room.dto';
 import { TestSafetyService } from '../safety/test-safety.service';
-import { TEST_LIMITS } from '../safety/test-policy';
+import { TEST_LIMITS, betaLimits } from '../safety/test-policy';
 import { sceneryNameOrFallback } from './scenery-token-name';
 import { readScene } from './scene.util';
 import type { SceneWall } from './scene.util';
@@ -401,7 +401,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
       const isSubActive = ownerSub?.status === 'ACTIVE' || ownerSub?.status === 'TRIALING';
       const activeTier = isSubActive ? (ownerSub?.tier ?? 'FREE') : 'FREE';
-      const limit = this.safety.enabled ? TEST_LIMITS.participants : (PLAYER_LIMITS as Record<string, number>)[activeTier] || 4;
+      const limit = this.safety.enabled ? betaLimits().participants : (PLAYER_LIMITS as Record<string, number>)[activeTier] || 4;
 
       if (room.players.size >= limit) {
         client.emit('room-error', {
