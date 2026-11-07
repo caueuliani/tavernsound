@@ -191,6 +191,13 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
     let cancelled = false
     const resumeController = new AbortController()
     let watchdog: ReturnType<typeof setTimeout> | undefined
+    const delayedUpdates = new Set<ReturnType<typeof setTimeout>>()
+    const socketHandlers: Array<{ event: string; handler: (...args: any[]) => void }> = []
+    const listen = (event: string, handler: (...args: any[]) => void) => {
+      if (!socket) return
+      socket.on(event, handler)
+      socketHandlers.push({ event, handler })
+    }
     const fail = (message: string) => {
       if (cancelled) return
       cancelled = true
@@ -296,7 +303,11 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
 
             setRemoteUsers(prev => new Set(prev).add(user.uid.toString()))
 
-            setTimeout(() => updateSpatialAudio(), 300)
+            const timer = setTimeout(() => {
+              delayedUpdates.delete(timer)
+              if (!cancelled) updateSpatialAudio()
+            }, 300)
+            delayedUpdates.add(timer)
           }
         })
 
@@ -317,7 +328,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         })
 
         if (socket) {
-          socket.on('agora-uid-announced', (data: { socketId: string; agoraUid: string; isHost: boolean }) => {
+          listen('agora-uid-announced', (data: { socketId: string; agoraUid: string; isHost: boolean }) => {
             for (const [socketId, uid] of socketToAgoraMapRef.current) {
               if (uid === data.agoraUid && socketId !== data.socketId) socketToAgoraMapRef.current.delete(socketId)
             }
@@ -326,16 +337,21 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
             updateSpatialAudio()
           })
 
-          socket.on('walls-updated', () => {
+          listen('walls-updated', () => {
             updateSpatialAudio()
           })
 
-          socket.on('door-toggled', () => {
+          listen('door-toggled', () => {
             updateSpatialAudio()
           })
 
-          socket.on('player-audio-position-updated', () => {
+          listen('player-audio-position-updated', () => {
             updateSpatialAudio()
+          })
+          // A recycled socket must re-announce its current Agora identity after reconnecting.
+          listen('connect', () => {
+            if (cancelled || !myAgoraUidRef.current || !socket.connected) return
+            socket.emit('announce-agora-uid', { socketId: socket.id, agoraUid: myAgoraUidRef.current })
           })
         }
 
@@ -401,13 +417,10 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
     return () => {
       cancelled = true
       clearTimeout(watchdog)
+      for (const timer of delayedUpdates) clearTimeout(timer)
+      delayedUpdates.clear()
       resumeController.abort()
-      if (socket) {
-        socket.off('agora-uid-announced')
-        socket.off('walls-updated')
-        socket.off('door-toggled')
-        socket.off('player-audio-position-updated')
-      }
+      for (const { event, handler } of socketHandlers) socket?.off(event, handler)
       remoteAudioNodesRef.current.forEach(audioNode => {
         try {
           audioNode.source.disconnect()
