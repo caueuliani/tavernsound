@@ -14,6 +14,7 @@ import {
   CampaignStatus,
 } from './dto/campaign.dto';
 import { randomBytes } from 'crypto';
+import { gameSystemId } from './game-systems';
 
 @Injectable()
 export class CampaignsService {
@@ -26,6 +27,7 @@ export class CampaignsService {
         description: dto.description,
         ownerId: userId,
         status: CampaignStatus.ACTIVE,
+        gameSystemId: gameSystemId(dto.gameSystemId),
       },
     });
 
@@ -111,7 +113,9 @@ export class CampaignsService {
 
     const updated = await this.prisma.campaign.update({
       where: { id: campaignId },
-      data: { name: dto.name, description: dto.description, status: dto.status },
+      data: { name: dto.name, description: dto.description, status: dto.status,
+        ...(dto.gameSystemId !== undefined ? { gameSystemId: gameSystemId(dto.gameSystemId) } : {}),
+      },
       include: {
         _count: {
           select: {
@@ -370,6 +374,7 @@ export class CampaignsService {
   private mapToCampaignDto(campaign: any, counts?: any): CampaignDto {
     return {
       id: campaign.id,
+      gameSystemId: campaign.gameSystemId ?? 'generic',
       name: campaign.name,
       description: campaign.description,
       status: campaign.status,
