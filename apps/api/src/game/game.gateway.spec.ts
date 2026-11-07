@@ -128,6 +128,32 @@ describe('GameGateway regressions', () => {
     expect(broadcast).toHaveBeenLastCalledWith('player-audio-mute-updated', { playerId: client.id, isMuted: false });
   });
 
+  it('only allows the host to choose an ambient preset and broadcasts within the room', () => {
+    const { player, room } = prepareRoom();
+    gateway.handleSetAmbientPreset({ preset: 'beach' }, client);
+    expect(room).toMatchObject({ ambientPreset: 'beach' });
+    expect(gateway.server.to).toHaveBeenCalledWith('room-a');
+    expect(broadcast).toHaveBeenLastCalledWith('ambient-preset-updated', { preset: 'beach' });
+
+    broadcast.mockClear();
+    gateway.handleSetAmbientPreset({ preset: 'unknown-track' }, client);
+    expect(room).toMatchObject({ ambientPreset: 'beach' });
+    expect(client.emit).toHaveBeenCalledWith('room-error', { message: 'Som ambiente inválido.' });
+    expect(broadcast).not.toHaveBeenCalled();
+
+    player.isHost = false;
+    gateway.handleSetAmbientPreset({ preset: 'combat' }, client);
+    expect(room).toMatchObject({ ambientPreset: 'beach' });
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('rejoins with the current ambience in the room snapshot', async () => {
+    const { joined } = await joinPersistedRoom('owner', 'owner');
+    expect(joined.ambientPreset).toBe('off');
+    gateway.handleSetAmbientPreset({ preset: 'forest' }, client);
+    expect((gateway as any).rooms.get('ABC123').ambientPreset).toBe('forest');
+  });
+
   it('does not create anonymous rooms', async () => {
     await gateway.handleCreateRoom({ name: 'Room' }, client);
     expect(prisma.room.create).not.toHaveBeenCalled();

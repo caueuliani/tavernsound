@@ -1,3 +1,4 @@
+import { validAmbientPreset, type AmbientPreset } from './ambient-presets';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -65,6 +66,7 @@ interface RoomData {
   walls?: SceneWall[];
   gridSize?: number;
   spatialAudioSettings?: SpatialAudioSettings;
+  ambientPreset?: AmbientPreset;
 }
 
 @WebSocketGateway({
@@ -497,6 +499,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       tokens: room.tokens,
       walls: room.walls ?? [],
       spatialAudioSettings: room.spatialAudioSettings,
+      ambientPreset: room.ambientPreset ?? 'off',
       recentRolls: recentRolls.reverse().map(r => ({
         playerId: '',
         playerName: r.playerName,
@@ -715,6 +718,23 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     this.prisma.token
       .update({ where: { id: data.tokenId }, data: { x: Math.floor(data.x), y: Math.floor(data.y), positionX: data.x, positionY: data.y } })
       .catch(() => {});
+  }
+
+  @SubscribeMessage('set-ambient-preset')
+  handleSetAmbientPreset(
+    @MessageBody() data: { preset?: unknown },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player?.roomId || !player.isHost) return;
+    if (!validAmbientPreset(data?.preset)) {
+      client.emit('room-error', { message: 'Som ambiente inválido.' });
+      return;
+    }
+    const room = this.rooms.get(player.roomId);
+    if (!room) return;
+    room.ambientPreset = data.preset;
+    this.server.to(player.roomId).emit('ambient-preset-updated', { preset: data.preset });
   }
 
   @SubscribeMessage('announce-agora-uid')

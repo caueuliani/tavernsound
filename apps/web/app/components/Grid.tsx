@@ -6,7 +6,7 @@ import { io } from 'socket.io-client'
 import { useSpatialAudio } from '../hooks/useSpatialAudio'
 import DiceRoller from './DiceRoller'
 import DiceHistory from './DiceHistory'
-import AmbientSound from './AmbientSound'
+import AmbientSound, { type AmbientPreset } from './AmbientSound'
 import type { Scene } from './SceneEditor'
 import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
@@ -85,6 +85,7 @@ export default function Grid({ roomId }: GridProps) {
   const [tokenCount, setTokenCount] = useState(0)
   const [connected, setConnected] = useState(false)
   const [roomError, setRoomError] = useState('')
+  const [ambientPreset, setAmbientPreset] = useState<AmbientPreset>('off')
   const [portraitError, setPortraitError] = useState('')
   const [testMode, setTestMode] = useState(true)
   const [testEndsAt, setTestEndsAt] = useState<number | null>(null)
@@ -327,6 +328,7 @@ export default function Grid({ roomId }: GridProps) {
     socket.on('room-error', (data: { message: string }) => { creatingTokenRef.current = false; setRoomError(data.message) })
 
     socket.on('room-joined', (data: any) => {
+      setAmbientPreset(data.ambientPreset ?? 'off')
       setTestMode(data.testMode !== false)
       setTestEndsAt(data.testEndsAt ?? null)
       setConnected(true)
@@ -365,6 +367,10 @@ export default function Grid({ roomId }: GridProps) {
       if (data.mapUrl && !data.mapUrl.startsWith('db-webp:')) {
         setMapData(data.mapUrl)
       }
+    })
+
+    socket.on('ambient-preset-updated', (data: { preset: AmbientPreset }) => {
+      setAmbientPreset(data.preset)
     })
 
     socket.on('room-player-count', (data: { count: number }) => {
@@ -892,7 +898,8 @@ export default function Grid({ roomId }: GridProps) {
             </button>}
             {isHost && <a href={`/room/${roomId}/scene`}>Preparar cenário (sem áudio) →</a>}
           </div>
-          <div style={{ flexBasis: '100%', borderTop: '1px solid #60452d', paddingTop: 8 }}><AmbientSound /></div>
+          <div style={{ flexBasis: '100%', borderTop: '1px solid #60452d', paddingTop: 8 }}><AmbientSound preset={ambientPreset} isHost={isHost} connected={connected}
+            onChangePreset={preset => socketRef.current?.emit('set-ambient-preset', { preset })} /></div>
           {portraitError && (!tokenEditor || imageTargetTokenIdRef.current !== tokenEditor.tokenId) && <p role="alert" className={styles.portraitError}>{portraitError}</p>}
           {(audioError || playbackBlocked || fogMode) && <div className={styles.toolbarNote}>
             {audioError && <span role="alert">{audioError}</span>}
