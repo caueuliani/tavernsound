@@ -118,6 +118,7 @@ export default function Home() {
       }}>
         {/* Header */}
         <a href="/" style={{ color: COLORS.gold, fontSize: '0.85rem' }}>← Conhecer o TavernSound</a>
+        <a href="/campaigns" style={{ display: 'block', marginTop: '0.75rem', color: COLORS.amber, fontWeight: 'bold' }}>📜 Campanhas e fichas de personagens</a>
         <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
           <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '15px' }}>
             <img 
