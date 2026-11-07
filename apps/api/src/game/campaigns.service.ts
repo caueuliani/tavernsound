@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateCampaignDto,
@@ -128,6 +128,19 @@ export class CampaignsService {
     });
 
     return this.mapToCampaignDto(updated, updated._count);
+  }
+
+  async linkRoom(campaignId: string, roomId: string, actorId: string) {
+    const campaign = await this.prisma.campaign.findUnique({ where: { id: campaignId } });
+    if (!campaign) throw new NotFoundException('Campanha não encontrada.');
+    if (campaign.ownerId !== actorId) throw new ForbiddenException('Apenas o mestre pode vincular salas.');
+    const room = await this.prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) throw new NotFoundException('Sala não encontrada.');
+    if (room.ownerId !== actorId) throw new ForbiddenException('Esta sala pertence a outra conta.');
+    if (room.campaignId && room.campaignId !== campaignId) {
+      throw new ConflictException('A sala já pertence a outra campanha.');
+    }
+    return this.prisma.room.update({ where: { id: roomId }, data: { campaignId } });
   }
 
   async deleteCampaign(campaignId: string, userId: string): Promise<void> {
