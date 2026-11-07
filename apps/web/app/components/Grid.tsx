@@ -6,6 +6,7 @@ import { io } from 'socket.io-client'
 import { useSpatialAudio } from '../hooks/useSpatialAudio'
 import DiceRoller from './DiceRoller'
 import DiceHistory from './DiceHistory'
+import WebcamPanel from './WebcamPanel'
 import type { Scene } from './SceneEditor'
 import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
@@ -129,7 +130,7 @@ export default function Grid({ roomId }: GridProps) {
   useEffect(() => { isHostRef.current = isHost }, [isHost])
   useEffect(() => { fogModeRef.current = fogMode }, [fogMode])
 
-  const { isConnected: audioConnected, playbackBlocked, enablePlayback, audioError, audioStatus, retryAudio, isMuted, toggleMute, remoteUsers, updateSpatialAudio } = useSpatialAudio({
+  const { isConnected: audioConnected, playbackBlocked, enablePlayback, audioError, audioStatus, retryAudio, isMuted, toggleMute, remoteUsers, cameraEnabled, cameraError, localCameraTrack, remoteVideoTracks, toggleCamera, updateSpatialAudio } = useSpatialAudio({
     channelName: roomId,
     isHost,
     myToken: isHost ? null : myOwnToken,
@@ -898,6 +899,8 @@ export default function Grid({ roomId }: GridProps) {
             {fogMode && <span>Toque nas células para revelar ou ocultar a névoa.</span>}
           </div>}
         </div>
+        <WebcamPanel connected={audioConnected} cameraEnabled={cameraEnabled} cameraError={cameraError}
+          localCameraTrack={localCameraTrack} remoteVideoTracks={remoteVideoTracks} toggleCamera={toggleCamera} />
         <div className={styles.table}>
           <div
             ref={canvasRef}
