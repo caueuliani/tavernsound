@@ -8,12 +8,14 @@ export enum CampaignStatus {
 export interface CreateCampaignDto {
   name: string;
   description?: string;
+  gameSystemId?: string;
 }
 
 export interface UpdateCampaignDto {
   name?: string;
   description?: string;
   status?: CampaignStatus;
+  gameSystemId?: string;
 }
 
 export interface CampaignMemberDto {
@@ -32,6 +34,7 @@ export interface GenerateInviteLinkDto {
 
 export interface CampaignDto {
   id: string;
+  gameSystemId: string;
   name: string;
   description?: string;
   status: CampaignStatus;
