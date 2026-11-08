@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, NotFoundException, Param, Post, Put, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, NotFoundException, Param, Post, Put, Query, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request, Response } from 'express';
 import { readFile, unlink } from 'node:fs/promises';
@@ -26,6 +26,34 @@ export class SceneController {
   private filePath(file: string) {
     if (!/^[a-f0-9-]{36}\.webp$/.test(file)) throw new NotFoundException('Mapa indisponível.');
     return path.join(this.folder, file);
+  }
+  private async chosenScene(room: any, sceneId: string | undefined, userId: string, edit: boolean) {
+    if (!sceneId) return null; // Existing VTT and legacy editor always use Room.
+    const stored = await this.prisma.scene.findFirst({ where: { id: sceneId, roomId: room.id } });
+    if (!stored) throw new NotFoundException('Cena não encontrada nesta sala.');
+    if (!edit && room.ownerId !== userId) {
+      const assigned = await this.prisma.roomSceneAssignment.findUnique({
+        where: { roomId_userId: { roomId: room.id, userId } },
+      });
+      const first = await this.prisma.scene.findFirst({ where: { roomId: room.id }, orderBy: { position: 'asc' } });
+      if (sceneId !== (assigned?.sceneId ?? first?.id)) throw new ForbiddenException('Cena não disponível para este jogador.');
+    }
+    return stored;
+  }
+  private initialScene(room: any, stored: any) {
+    return !!stored && stored.id === `initial-${room.id}`;
+  }
+  private async saveSelected(room: any, stored: any, scene: SceneData, revision: string | undefined, mapBytes?: Buffer | null) {
+    if (!stored || this.initialScene(room, stored)) return this.save(room, scene, revision, mapBytes);
+    if (revision !== String(readScene(stored.sceneData).revision)) throw new ConflictException('O cenário mudou. Recarregue antes de salvar.');
+    scene.revision++;
+    const result = await this.prisma.scene.updateMany({ where: { id: stored.id, roomId: room.id, updatedAt: stored.updatedAt }, data: {
+      sceneData: scene as any,
+      ...(mapBytes === undefined ? {} : { mapUrl: mapBytes ? `db-webp:${mapBytes.toString('base64')}` : null }),
+    } });
+    if (result.count !== 1) throw new ConflictException('Outra alteração foi salva. Recarregue o cenário.');
+    // Draft scenes must not update the active VTT until scene activation is implemented.
+    return publicScene(room.id, scene, stored.id);
   }
   private async save(room: any, scene: SceneData, revision: string | undefined, mapBytes?: Buffer | null) {
     if (revision !== String(readScene(room.sceneData).revision)) throw new ConflictException('O cenário mudou. Recarregue antes de salvar.');
@@ -87,34 +115,47 @@ export class SceneController {
   }
 
   @Get()
-  async get(@Param('roomId') id: string, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  async get(@Param('roomId') id: string, @Query('sceneId') sceneId: string | undefined, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const user = await this.sessions.require(req.headers.cookie);
     const room = await this.access.require(id, user.id);
     res.setHeader('Cache-Control', 'no-store');
-    return { scene: publicScene(id, readScene(room.sceneData)), editingEnabled: this.enabled(), isHost: room.ownerId === user.id };
+    const stored = await this.chosenScene(room, sceneId, user.id, false);
+    const source = stored && !this.initialScene(room, stored) ? stored.sceneData : room.sceneData;
+    const scene = readScene(source);
+    return { scene: publicScene(id, scene, stored && !this.initialScene(room, stored) ? stored.id : undefined),
+      editingEnabled: this.enabled(), isHost: room.ownerId === user.id, sceneId: stored?.id ?? null };
   }
+
   @Get('image')
-  async image(@Param('roomId') id: string, @Req() req: Request, @Res() res: Response) {
-    const room = await this.authorize(id, req);
-    const map = readScene(room.sceneData).map;
+  async image(@Param('roomId') id: string, @Query('sceneId') sceneId: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.require(id, user.id);
+    const stored = await this.chosenScene(room, sceneId, user.id, false);
+    const source = stored && !this.initialScene(room, stored) ? stored : room;
+    const map = readScene(source.sceneData).map;
     if (!map) throw new NotFoundException('Nenhum mapa salvo.');
     let bytes: Buffer;
-    if (typeof room.mapUrl === 'string' && room.mapUrl.startsWith('db-webp:')) {
-      bytes = Buffer.from(room.mapUrl.slice('db-webp:'.length), 'base64');
+    if (typeof source.mapUrl === 'string' && source.mapUrl.startsWith('db-webp:')) {
+      bytes = Buffer.from(source.mapUrl.slice('db-webp:'.length), 'base64');
     } else {
       try { bytes = await readFile(this.filePath(map.file)); } catch { throw new NotFoundException('Arquivo do mapa não encontrado.'); }
     }
     res.set({ 'Content-Type': 'image/webp', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }).send(bytes);
   }
+
   @Put()
-  async edit(@Param('roomId') id: string, @Req() req: Request, @Body() body: unknown, @Headers('if-match') revision: string) {
+  async edit(@Param('roomId') id: string, @Query('sceneId') sceneId: string | undefined, @Req() req: Request, @Body() body: unknown, @Headers('if-match') revision: string) {
     const room = await this.authorize(id, req, true);
-    return this.save(room, { ...readScene(room.sceneData), ...validateSceneEdit(body) }, revision);
+    const stored = await this.chosenScene(room, sceneId, room.ownerId!, true);
+    const source = stored && !this.initialScene(room, stored) ? stored.sceneData : room.sceneData;
+    return this.saveSelected(room, stored, { ...readScene(source), ...validateSceneEdit(body) }, revision);
   }
+
   @Post('image')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 3 * 1024 * 1024, files: 1, fields: 0, parts: 1 } }))
-  async upload(@Param('roomId') id: string, @Req() req: Request, @UploadedFile() file: { buffer: Buffer }, @Headers('if-match') revision: string) {
+  async upload(@Param('roomId') id: string, @Query('sceneId') sceneId: string | undefined, @Req() req: Request, @UploadedFile() file: { buffer: Buffer }, @Headers('if-match') revision: string) {
     const room = await this.authorize(id, req, true);
+    const stored = await this.chosenScene(room, sceneId, room.ownerId!, true);
     if (!file?.buffer?.length) throw new BadRequestException('Selecione uma imagem de até 3 MB.');
     let result: { data: Buffer; info: { width: number; height: number } };
     try {
@@ -124,17 +165,21 @@ export class SceneController {
       result = await pipeline.rotate().resize(2048, 2048, { fit: 'inside', withoutEnlargement: true }).webp({ quality: 85 }).toBuffer({ resolveWithObject: true });
     } catch { throw new BadRequestException('Use PNG, JPG ou WebP estático, com até 16 megapixels.'); }
     if (result.data.length > 3 * 1024 * 1024) throw new BadRequestException('Imagem resultante muito grande.');
-    const scene = readScene(room.sceneData);
+    const source = stored && !this.initialScene(room, stored) ? stored.sceneData : room.sceneData;
+    const scene = readScene(source);
     const filename = `${randomUUID()}.webp`;
-    const saved = await this.save(room, { ...scene, map: { file: filename, width: result.info.width, height: result.info.height } }, revision, result.data);
+    const saved = await this.saveSelected(room, stored, { ...scene, map: { file: filename, width: result.info.width, height: result.info.height } }, revision, result.data);
     if (scene.map) await unlink(this.filePath(scene.map.file)).catch(() => {});
     return saved;
   }
+
   @Delete('image')
-  async remove(@Param('roomId') id: string, @Req() req: Request, @Headers('if-match') revision: string) {
+  async remove(@Param('roomId') id: string, @Query('sceneId') sceneId: string | undefined, @Req() req: Request, @Headers('if-match') revision: string) {
     const room = await this.authorize(id, req, true);
-    const scene = readScene(room.sceneData);
-    const saved = await this.save(room, { ...scene, map: null }, revision, null);
+    const stored = await this.chosenScene(room, sceneId, room.ownerId!, true);
+    const source = stored && !this.initialScene(room, stored) ? stored.sceneData : room.sceneData;
+    const scene = readScene(source);
+    const saved = await this.saveSelected(room, stored, { ...scene, map: null }, revision, null);
     if (scene.map) await unlink(this.filePath(scene.map.file)).catch(() => {});
     return saved;
   }
