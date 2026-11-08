@@ -17,7 +17,7 @@ describe('GameGateway regressions', () => {
       room: { count: jest.fn().mockResolvedValue(0), create: jest.fn().mockResolvedValue({}), findUnique: jest.fn(), update: jest.fn().mockResolvedValue({}) },
       token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}), findMany: jest.fn().mockResolvedValue([]) },
       scene: { findFirst: jest.fn().mockResolvedValue(null) },
-      diceRoll: { findMany: jest.fn().mockResolvedValue([]) },
+      diceRoll: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn().mockResolvedValue({}) },
       event: { findMany: jest.fn().mockResolvedValue([]) },
     };
     sessions = { require: jest.fn(), on: jest.fn(), voiceUid: jest.fn().mockReturnValue('allowed-uid') };
@@ -117,7 +117,7 @@ describe('GameGateway regressions', () => {
       await gateway.handleCreateToken({ tokenId: 'beach-new', x: 1, y: 1, color: 0 }, client);
       await gateway.handleRollDice({ quantity: 1, sides: 20, modifier: 0 }, client);
       expect(prisma.diceRoll.findMany).toHaveBeenCalled();
-      expect(prisma.diceRoll.create).toBeUndefined();
+      expect(prisma.diceRoll.create).not.toHaveBeenCalled();
       expect(prisma.token.create).not.toHaveBeenCalled();
       expect(prisma.token.update).not.toHaveBeenCalled();
     } finally {
