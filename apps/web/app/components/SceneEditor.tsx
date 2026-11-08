@@ -16,7 +16,8 @@ export interface Scene {
 const initial = (): Scene => ({ revision: 0, map: null, settings: { scale: 1, x: 0, y: 0, gridOpacity: .3, gridSize: DEFAULT_GRID_SIZE }, walls: [] })
 type Point = { x: number; y: number }
 type Tool = 'play' | 'wall' | 'door' | 'window' | 'cave' | 'select'
-export default function SceneEditor({ roomId, socket, connected, isHost, onChange, children }: {
+export default function SceneEditor({ roomId, sceneId, socket, connected, isHost, onChange, children }: {
+  sceneId?: string;
   roomId: string; socket: any; connected: boolean; isHost: boolean; onChange: (scene: Scene) => void; children: ReactNode
 }) {
   const [scene, setScene] = useState<Scene>(initial)
@@ -39,6 +40,7 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
   const drag = useRef<{ point: Point; wall: SceneWall; endpoint?: 'start' | 'end' } | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const endpoint = apiUrl(`/rooms/${roomId}/scene`)
+  const sceneQuery = sceneId ? `?sceneId=${encodeURIComponent(sceneId)}` : ''
   const editable = isHost && enabled && loaded && connected && !busy
   const active = editable ? tool : 'play'
   const selectedWall = scene.walls.find(w => w.id === selected)
@@ -63,18 +65,18 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
       accept(value)
     }
     socket?.on('scene-updated', applyRemote)
-    fetch(endpoint, { credentials: 'include', cache: 'no-store' }).then(async r => {
+    fetch(endpoint + sceneQuery, { credentials: 'include', cache: 'no-store' }).then(async r => {
       const data = await r.json(); if (!r.ok) throw new Error(data.message || 'Não foi possível carregar o cenário.')
       if (disposed) return
       setEnabled(data.editingEnabled)
       if (!dirtyRef.current && data.scene.revision >= sceneRef.current.revision) accept(data.scene)
     }).catch(e => { if (!disposed) setError(e.message) })
     return () => { disposed = true; socket?.off('scene-updated', applyRemote) }
-  }, [endpoint, socket, connected])
+  }, [endpoint, sceneQuery, socket, connected])
   const reload = async () => {
     if (dirty && !confirm('Descartar os ajustes locais e carregar o cenário salvo?')) return
     try {
-      const response = await fetch(endpoint, { credentials: 'include', cache: 'no-store' })
+      const response = await fetch(endpoint + sceneQuery, { credentials: 'include', cache: 'no-store' })
       const data = await response.json(); if (!response.ok) throw new Error(data.message)
       accept(data.scene); setEnabled(data.editingEnabled); setMessage('Cenário recarregado.')
     } catch (e) { setError((e as Error).message) }
@@ -82,11 +84,11 @@ export default function SceneEditor({ roomId, socket, connected, isHost, onChang
   const request = async (suffix: string, method: string, body?: BodyInit) => {
     setBusy(true); setError('')
     try {
-      const response = await fetch(endpoint + suffix, { method, credentials: 'include', headers: {
+      const response = await fetch(endpoint + suffix + sceneQuery, { method, credentials: 'include', headers: {
         'If-Match': String(sceneRef.current.revision), ...(typeof body === 'string' ? { 'Content-Type': 'application/json' } : {}),
       }, body })
       const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Não foi possível salvar.')
-      accept(data); setMessage('Cenário salvo e sincronizado com a sala.'); return true
+      accept(data); setMessage(sceneId && !sceneId.startsWith('initial-') ? 'Rascunho salvo. Ainda não está visível na mesa.' : 'Cenário salvo e sincronizado com a sala.'); return true
     } catch (e) { setError((e as Error).message); return false }
     finally { setBusy(false) }
   }
