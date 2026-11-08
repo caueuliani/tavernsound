@@ -85,6 +85,9 @@ export default function Grid({ roomId }: GridProps) {
 
   const [tokenCount, setTokenCount] = useState(0)
   const [connected, setConnected] = useState(false)
+  // Disabled by default. All participants must use the same RTC mode until
+  // the coordinated scene activation protocol is implemented.
+  const [rtcSceneId, setRtcSceneId] = useState<string | null>(null)
   const [roomError, setRoomError] = useState('')
   const [ambientPreset, setAmbientPreset] = useState<AmbientPreset>('off')
   const [portraitError, setPortraitError] = useState('')
@@ -134,6 +137,7 @@ export default function Grid({ roomId }: GridProps) {
 
   const { isConnected: audioConnected, playbackBlocked, enablePlayback, audioError, audioStatus, retryAudio, isMuted, toggleMute, remoteUsers, cameraEnabled, cameraBusy, cameraError, localCameraTrack, remoteVideoTracks, toggleCamera, updateSpatialAudio } = useSpatialAudio({
     channelName: roomId,
+    sceneId: process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF === 'true' ? rtcSceneId ?? undefined : undefined,
     isHost,
     myToken: isHost ? null : myOwnToken,
     allTokens: tokensRef.current,
@@ -329,6 +333,7 @@ export default function Grid({ roomId }: GridProps) {
     socket.on('room-error', (data: { message: string }) => { creatingTokenRef.current = false; setRoomError(data.message) })
 
     socket.on('room-joined', (data: any) => {
+      setRtcSceneId(typeof data.sceneId === 'string' ? data.sceneId : null)
       setAmbientPreset(data.ambientPreset ?? 'off')
       setTestMode(data.testMode !== false)
       setTestEndsAt(data.testEndsAt ?? null)
@@ -378,7 +383,7 @@ export default function Grid({ roomId }: GridProps) {
       window.dispatchEvent(new CustomEvent('room-player-count', { detail: { count: data.count } }))
     })
 
-    socket.on('disconnect', () => { setConnected(false); setPlayerId(''); hostSocketIdsRef.current.clear() })
+    socket.on('disconnect', () => { setConnected(false); setPlayerId(''); setRtcSceneId(null); hostSocketIdsRef.current.clear() })
 
     socket.on('agora-uid-announced', (data: { socketId: string; isHost: boolean }) => {
       if (data.isHost === true) hostSocketIdsRef.current.add(data.socketId)
