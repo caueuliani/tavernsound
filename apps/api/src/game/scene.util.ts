@@ -46,6 +46,6 @@ export function validateSceneEdit(value: any): Pick<SceneData, 'settings' | 'wal
   });
   return { settings: { scale: s.scale, x: s.x, y: s.y, gridOpacity: s.gridOpacity, gridSize }, walls };
 }
-export function publicScene(roomId: string, scene: SceneData) {
-  return { ...scene, map: scene.map ? { width: scene.map.width, height: scene.map.height, url: `/rooms/${roomId}/scene/image?v=${scene.revision}` } : null };
+export function publicScene(roomId: string, scene: SceneData, sceneId?: string) {
+  return { ...scene, map: scene.map ? { width: scene.map.width, height: scene.map.height, url: `/rooms/${roomId}/scene/image?v=${scene.revision}${sceneId ? `&sceneId=${encodeURIComponent(sceneId)}` : ''}` } : null };
 }
