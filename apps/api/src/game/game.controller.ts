@@ -21,7 +21,7 @@ export class GameController {
     if (sceneId !== undefined) {
       await this.access.requireSceneMedia(channelName, session.id, sceneId);
     } else {
-      await this.access.require(channelName, session.id);
+      await this.access.requireLegacyMedia(channelName, session.id);
     }
     const appId = process.env.AGORA_APP_ID;
     const appCertificate = process.env.AGORA_APP_CERTIFICATE;
