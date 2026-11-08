@@ -144,6 +144,64 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     expiresAt: number; status: 'pending' | 'accepted' | 'rejected';
   }>();
   private readonly transferPreflightTtlMs = 45_000;
+  private readonly activationReadyMs = 90_000;
+  private readonly pendingActivations = new Map<string, { sceneId: string; timer: ReturnType<typeof setTimeout> }>();
+  private activationKey(roomId: string, userId: string) { return `${roomId}:${userId}`; }
+
+  private clearPendingActivation(roomId: string, userId: string) {
+    const key = this.activationKey(roomId, userId);
+    const pending = this.pendingActivations.get(key);
+    if (pending) clearTimeout(pending.timer);
+    this.pendingActivations.delete(key);
+  }
+
+  private async rollbackUnconfirmedActivation(roomId: string, userId: string, sceneId: string) {
+    const key = this.activationKey(roomId, userId);
+    if (this.pendingActivations.get(key)?.sceneId !== sceneId) return;
+    this.clearPendingActivation(roomId, userId);
+    const playerTokenId = createHash('sha256').update(`${roomId}:${userId}`).digest('hex');
+    try {
+      const reverted = await this.prisma.$transaction(async tx => {
+        const changed = await tx.roomSceneAssignment.updateMany({
+          where: { roomId, userId, activeSceneId: sceneId },
+          data: { activeSceneId: null },
+        });
+        if (changed.count) {
+          await tx.token.updateMany({
+            where: { id: playerTokenId, roomId, sceneId },
+            data: { sceneId: `initial-${roomId}` },
+          });
+        }
+        return changed.count;
+      });
+      if (reverted) this.recoverPlayerToInitial(roomId, userId);
+    } catch (error) {
+      // The GM recovery endpoint remains available even if Neon is down.
+      console.error('Falha ao restaurar automaticamente a transferência de cena:', error);
+    }
+  }
+
+  @SubscribeMessage('scene-client-ready')
+  async handleSceneClientReady(
+    @MessageBody() data: { sceneId?: unknown },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const player = this.players.get(client.id);
+    if (!player?.roomId || !player.userId || !player.sceneTransportV2 ||
+        typeof data?.sceneId !== 'string' || player.sceneId !== data.sceneId) return;
+    const key = this.activationKey(player.roomId, player.userId);
+    if (this.pendingActivations.get(key)?.sceneId !== data.sceneId) return;
+    // The browser ACK is accepted only after checking the persisted active
+    // scene. Client-side media readiness remains an end-to-end test concern.
+    try {
+      const active = await this.access.activeSceneForUser(player.roomId, player.userId);
+      if (active.sceneId !== data.sceneId) return;
+    } catch { return; }
+    this.clearPendingActivation(player.roomId, player.userId);
+    client.emit('scene-activation-confirmed', { sceneId: data.sceneId });
+  }
+
+
 
   requestSceneTransferPreflight(roomId: string, userId: string, sceneId: string) {
     // Only the authenticated HTTP controller may call this method, after
@@ -171,6 +229,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
    * the initial scene instead of retaining stale RTC / map state.
    */
   recoverPlayerToInitial(roomId: string, userId: string) {
+    this.clearPendingActivation(roomId, userId);
     for (const [id, request] of this.transferPreflights) {
       if (request.roomId === roomId && request.userId === userId) this.transferPreflights.delete(id);
     }
@@ -200,11 +259,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const request = this.transferPreflights.get(requestId);
     if (!request || request.roomId !== roomId || request.userId !== userId || request.sceneId !== sceneId) return;
     this.transferPreflights.delete(requestId);
+    this.clearPendingActivation(roomId, userId);
+    const timer = setTimeout(() => {
+      void this.rollbackUnconfirmedActivation(roomId, userId, sceneId);
+    }, this.activationReadyMs);
+    timer.unref();
+    this.pendingActivations.set(this.activationKey(roomId, userId), { sceneId, timer });
+    // Even if the original socket disconnected after DB commit, the timeout
+    // restores initial scene+token unless the new scene sends a valid ACK.
     const socket = this.server?.sockets?.sockets?.get(request.socketId);
-    if (!socket?.connected) return;
-    // The browser handoff is deliberately a separate PR. Do not claim
-    // that a DB commit proves the map, Socket.IO and Agora already switched.
-    socket.emit('scene-activation-required', { sceneId, mode: 'reload-required' });
+    if (socket?.connected) socket.emit('scene-activation-required', { sceneId, mode: 'reload-required' });
   }
 
   sceneTransferPreflightStatus(roomId: string, requestId: string) {
