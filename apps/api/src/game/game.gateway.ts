@@ -595,7 +595,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     room.players.set(client.id, playerData);
     client.join(data.roomId);
     client.join(activeSocketRoom);
-    client.emit('scene-transport-ready', { sceneId: activeScene.sceneId, isolated: alternative });
+    client.emit('scene-transport-ready', alternative
+      ? { sceneId: activeScene.sceneId, isolated: false, socketScoped: true }
+      : { sceneId: activeScene.sceneId, isolated: false });
 
     const [recentRolls, chatEvents] = await Promise.all([
       this.prisma.diceRoll.findMany({
@@ -634,7 +636,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       tokens: sceneTokens,
       walls: alternative ? sceneGeometry!.walls : room.walls ?? [],
       spatialAudioSettings: room.spatialAudioSettings,
-      ambientPreset: room.ambientPreset ?? 'off',
+      ambientPreset: alternative ? 'off' : room.ambientPreset ?? 'off',
       // Dice rows are legacy room-wide: do not disclose them to a different scene.
       recentRolls: (alternative ? [] : recentRolls.reverse()).map(r => ({
         playerId: '',
