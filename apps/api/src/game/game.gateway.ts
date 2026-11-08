@@ -83,28 +83,36 @@ interface RoomData {
   maxHttpBufferSize: 16 * 1024,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
+  private initialTransport(roomId: string) {
+    return sceneSocketRoom(roomId, `initial-${roomId}`);
+  }
+  private tokenTransport(roomId: string, token?: TokenData) {
+    return sceneSocketRoom(roomId, token?.sceneId ?? `initial-${roomId}`);
+  }
+
   publishTokenName(roomId: string, tokenId: string, name: string) {
     const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
     if (token) token.playerName = name;
-    this.server.to(roomId).emit('token-name-updated', { tokenId, name });
+    if (token) this.server.to(this.tokenTransport(roomId, token)).emit('token-name-updated', { tokenId, name });
   }
   publishTokenSize(roomId: string, tokenId: string, size: number) {
     const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
     if (token) token.size = size;
-    this.server.to(roomId).emit('token-size-updated', { tokenId, size });
+    if (token) this.server.to(this.tokenTransport(roomId, token)).emit('token-size-updated', { tokenId, size });
   }
   publishTokenDeleted(roomId: string, tokenId: string) {
     const room = this.rooms.get(roomId);
+    const deleted = room?.tokens.find(token => token.id === tokenId);
     if (room) {
       room.tokens = room.tokens.filter(token => token.id !== tokenId);
       for (const player of room.players.values()) player.tokens = player.tokens.filter(token => token.id !== tokenId);
     }
-    this.server.to(roomId).emit('token-deleted', { tokenId });
+    if (deleted) this.server.to(this.tokenTransport(roomId, deleted)).emit('token-deleted', { tokenId });
   }
   publishTokenImage(roomId: string, tokenId: string, imageData: string) {
     const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
     if (token) token.imageUrl = imageData;
-    this.server.to(roomId).emit('token-image-updated', { tokenId, imageData });
+    if (token) this.server.to(this.tokenTransport(roomId, token)).emit('token-image-updated', { tokenId, imageData });
   }
   closeRoom(roomId: string) {
     this.server.to(roomId).emit('room-error', { message: 'Esta sala foi excluída pelo mestre. Volte para a página inicial.' });
@@ -114,7 +122,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   publishScene(roomId: string, scene: any) {
     const room = this.rooms.get(roomId);
     if (room) { room.walls = scene.walls; room.gridSize = scene.settings?.gridSize ?? 10; }
-    this.server.to(roomId).emit('scene-updated', scene);
+    this.server.to(this.initialTransport(roomId)).emit('scene-updated', scene);
   }
   @WebSocketServer()
   server: Server;
@@ -206,7 +214,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         // Remove tokens da memória, mas NÃO do banco — o estado do mapa persiste
         const tokenIds = player.tokens.map(t => t.id);
         room.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
-        client.to(player.roomId).emit('remove-player-tokens', {
+        client.to(this.initialTransport(player.roomId)).emit('remove-player-tokens', {
           playerId: client.id,
           tokenIds,
         });
@@ -465,11 +473,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const persistentTokenId = createHash('sha256').update(`${data.roomId}:${session.id}`).digest('hex');
     const ownToken = room.tokens.find(t => t.id === persistentTokenId);
     if (ownToken && !isHost) {
-      this.server.to(data.roomId).emit('remove-player-tokens', { playerId: ownToken.playerId });
+      this.server.to(this.tokenTransport(data.roomId, ownToken)).emit('remove-player-tokens', { playerId: ownToken.playerId });
       ownToken.playerId = client.id;
       playerData.tokens.push(ownToken);
       playerData.audioPosition = { x: ownToken.x, y: ownToken.y, z: 0 };
-      this.server.to(data.roomId).emit('token-created', ownToken);
+      this.server.to(this.tokenTransport(data.roomId, ownToken)).emit('token-created', ownToken);
     }
     this.players.set(client.id, playerData);
     room.players.set(client.id, playerData);
@@ -685,7 +693,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     player.tokens.push(token);
     room.tokens.push(token);
 
-    this.server.to(player.roomId).emit('token-created', token);
+    this.server.to(this.tokenTransport(player.roomId, token)).emit('token-created', token);
     console.log(`🎯 Token criado por ${token.playerName} em (${data.x},${data.y}) na sala ${player.roomId}`);
     return { ok: true };
   }
@@ -725,7 +733,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     // Se o token for do próprio jogador, atualizamos sua posição de áudio correspondente
     if (!player.isHost) player.audioPosition = { x: data.x, y: data.y, z: 0 };
 
-    client.to(player.roomId).emit('token-moved', {
+    client.to(this.tokenTransport(player.roomId, token)).emit('token-moved', {
       tokenId: data.tokenId,
       x: data.x,
       y: data.y,
@@ -858,7 +866,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     token.hp = data.hp;
     token.maxHp = data.maxHp;
 
-    this.server.to(player.roomId).emit('token-hp-updated', {
+    this.server.to(this.tokenTransport(player.roomId, token)).emit('token-hp-updated', {
       tokenId: data.tokenId,
       hp: data.hp,
       maxHp: data.maxHp,
