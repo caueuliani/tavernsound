@@ -326,9 +326,19 @@ export class SceneController {
 
     // A nullable activeSceneId means the initial scene. Staging (sceneId)
     // is deliberately preserved to allow another preflight later.
-    const result = await this.prisma.roomSceneAssignment.updateMany({
-      where: { roomId, userId: targetUserId, activeSceneId: { not: null } },
-      data: { activeSceneId: null },
+    const playerTokenId = createHash('sha256').update(`${roomId}:${targetUserId}`).digest('hex');
+    const result = await this.prisma.$transaction(async tx => {
+      const changed = await tx.roomSceneAssignment.updateMany({
+        where: { roomId, userId: targetUserId, activeSceneId: { not: null } },
+        data: { activeSceneId: null },
+      });
+      // Recovery must also restore the persistent player token; otherwise
+      // the initial scene would remain empty after the active assignment reset.
+      await tx.token.updateMany({
+        where: { id: playerTokenId, roomId },
+        data: { sceneId: `initial-${roomId}` },
+      });
+      return changed;
     });
     // Also cancel pending preflight requests, even on an idempotent reset.
     this.gateway.recoverPlayerToInitial(roomId, targetUserId);
