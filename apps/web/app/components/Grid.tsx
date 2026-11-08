@@ -843,10 +843,12 @@ export default function Grid({ roomId }: GridProps) {
         // displaying a legacy image when the new scene has no map.
         setMapData(null)
         setScene(snapshot.scene as Scene)
-        if (Array.isArray(snapshot.fogData) && snapshot.fogData.length === GRID_CELLS * GRID_CELLS) {
-          fogDataRef.current = snapshot.fogData
-          fogCellsRef.current.forEach((cell, idx) => { cell.visible = !snapshot.fogData![idx] })
-        }
+        // Fail closed: missing/short fog must never inherit the previous
+        // scene's revealed cells.
+        const fog = Array.isArray(snapshot.fogData) && snapshot.fogData.length === GRID_CELLS * GRID_CELLS
+          ? snapshot.fogData : new Array(GRID_CELLS * GRID_CELLS).fill(false)
+        fogDataRef.current = fog
+        fogCellsRef.current.forEach((cell, idx) => { cell.visible = !fog[idx] })
         // Token visibility remains owned by Socket.IO until the switch
         // protocol supports scene-scoped token identities end to end.
       } else applyScene(data.scene)
