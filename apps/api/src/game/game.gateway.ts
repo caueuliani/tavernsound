@@ -164,6 +164,27 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     return { requestId, status: 'pending' as const, expiresAt };
   }
 
+  /**
+   * Reset any pending transfer requests and disconnect the target's existing
+   * socket after a GM-authorized database recovery. A fresh join reloads
+   * the initial scene instead of retaining stale RTC / map state.
+   */
+  recoverPlayerToInitial(roomId: string, userId: string) {
+    for (const [id, request] of this.transferPreflights) {
+      if (request.roomId === roomId && request.userId === userId) this.transferPreflights.delete(id);
+    }
+    for (const player of this.players.values()) {
+      if (player.roomId !== roomId || player.userId !== userId) continue;
+      const socket = this.server?.sockets?.sockets?.get(player.id);
+      if (!socket) continue;
+      socket.emit('scene-recovery-required', {
+        sceneId: `initial-${roomId}`,
+        message: 'O mestre restaurou sua Cena inicial. Reconecte à mesa.',
+      });
+      socket.disconnect(true);
+    }
+  }
+
   sceneTransferPreflightStatus(roomId: string, requestId: string) {
     const request = this.transferPreflights.get(requestId);
     if (!request || request.roomId !== roomId) return null;
