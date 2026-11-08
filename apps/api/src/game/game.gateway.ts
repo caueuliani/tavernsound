@@ -71,6 +71,7 @@ interface RoomData {
   gridSize?: number;
   spatialAudioSettings?: SpatialAudioSettings;
   ambientPreset?: AmbientPreset;
+  alternativeScenes?: Map<string, { tokens: TokenData[]; walls: SceneWall[]; gridSize: number }>;
 }
 
 @WebSocketGateway({
@@ -97,28 +98,46 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   private sameScene(a: PlayerData, b: PlayerData) {
     return a.roomId === b.roomId && (a.sceneId ?? `initial-${a.roomId}`) === (b.sceneId ?? `initial-${b.roomId}`);
   }
+  private sceneState(room: RoomData, sceneId?: string) {
+    if (!sceneId || sceneId === `initial-${room.id}`) return room;
+    return room.alternativeScenes?.get(sceneId) ?? null;
+  }
+  private findSceneToken(roomId: string, tokenId: string): TokenData | undefined {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    const initial = room.tokens.find(t => t.id === tokenId);
+    if (initial) return initial;
+    for (const scene of room.alternativeScenes?.values() ?? []) {
+      const token = scene.tokens.find(t => t.id === tokenId);
+      if (token) return token;
+    }
+  }
+
 
   publishTokenName(roomId: string, tokenId: string, name: string) {
-    const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
+    const token = this.findSceneToken(roomId, tokenId);
     if (token) token.playerName = name;
     if (token) this.server.to(this.tokenTransport(roomId, token)).emit('token-name-updated', { tokenId, name });
   }
   publishTokenSize(roomId: string, tokenId: string, size: number) {
-    const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
+    const token = this.findSceneToken(roomId, tokenId);
     if (token) token.size = size;
     if (token) this.server.to(this.tokenTransport(roomId, token)).emit('token-size-updated', { tokenId, size });
   }
   publishTokenDeleted(roomId: string, tokenId: string) {
     const room = this.rooms.get(roomId);
-    const deleted = room?.tokens.find(token => token.id === tokenId);
+    const deleted = this.findSceneToken(roomId, tokenId);
     if (room) {
       room.tokens = room.tokens.filter(token => token.id !== tokenId);
+      for (const scene of room.alternativeScenes?.values() ?? []) {
+        scene.tokens = scene.tokens.filter(token => token.id !== tokenId);
+      }
       for (const player of room.players.values()) player.tokens = player.tokens.filter(token => token.id !== tokenId);
     }
     if (deleted) this.server.to(this.tokenTransport(roomId, deleted)).emit('token-deleted', { tokenId });
   }
   publishTokenImage(roomId: string, tokenId: string, imageData: string) {
-    const token = this.rooms.get(roomId)?.tokens.find(item => item.id === tokenId);
+    const token = this.findSceneToken(roomId, tokenId);
     if (token) token.imageUrl = imageData;
     if (token) this.server.to(this.tokenTransport(roomId, token)).emit('token-image-updated', { tokenId, imageData });
   }
