@@ -223,6 +223,29 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     return { requestId, status: 'pending' as const, expiresAt };
   }
 
+  private async restoreRecoveredPlayerToken(roomId: string, userId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    const id = createHash('sha256').update(`${roomId}:${userId}`).digest('hex');
+    if (room.tokens.some(token => token.id === id)) return;
+    const token = await this.prisma.token.findUnique({ where: { id } });
+    if (!token || token.roomId !== roomId ||
+        (token.sceneId && token.sceneId !== `initial-${roomId}`)) return;
+    const visible: TokenData = {
+      id: token.id, sceneId: `initial-${roomId}`, kind: token.kind,
+      x: token.positionX ?? token.x, y: token.positionY ?? token.y,
+      color: parseInt((token.color || '#ff9d00').replace('#', ''), 16),
+      playerId: token.id, playerName: token.name,
+      hp: token.hp ?? undefined, maxHp: token.maxHp ?? undefined,
+      imageUrl: token.imageUrl ?? undefined, size: tokenSize(token.sizeMultiplier),
+    };
+    // A different join/recovery might have populated the token meanwhile.
+    if (!room.tokens.some(existing => existing.id === id)) {
+      room.tokens.push(visible);
+      this.server.to(this.initialTransport(roomId)).emit('token-created', visible);
+    }
+  }
+
   /**
    * Reset any pending transfer requests and disconnect the target's existing
    * socket after a GM-authorized database recovery. A fresh join reloads
@@ -230,6 +253,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
    */
   recoverPlayerToInitial(roomId: string, userId: string) {
     this.clearPendingActivation(roomId, userId);
+    void this.restoreRecoveredPlayerToken(roomId, userId).catch(error => {
+      console.error('Não foi possível atualizar o token recuperado na mesa:', error);
+    });
     for (const [id, request] of this.transferPreflights) {
       if (request.roomId === roomId && request.userId === userId) this.transferPreflights.delete(id);
     }
@@ -260,6 +286,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!request || request.roomId !== roomId || request.userId !== userId || request.sceneId !== sceneId) return;
     this.transferPreflights.delete(requestId);
     this.clearPendingActivation(roomId, userId);
+    // The database moved the player's persistent token. Remove its stale
+    // representation from the initial in-memory scene immediately.
+    const playerTokenId = createHash('sha256').update(`${roomId}:${userId}`).digest('hex');
+    this.publishTokenDeleted(roomId, playerTokenId);
     const timer = setTimeout(() => {
       void this.rollbackUnconfirmedActivation(roomId, userId, sceneId);
     }, this.activationReadyMs);
