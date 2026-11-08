@@ -158,6 +158,52 @@ describe('GameGateway regressions', () => {
     expect(broadcast).toHaveBeenCalledWith('agora-uid-announced', { socketId: client.id, agoraUid: 'allowed-uid', isHost: true });
   });
 
+  it('never replays voice identities from another scene in the same room', () => {
+    const { player } = prepareRoom();
+    player.sceneId = 'initial-ABC123';
+    client.data.session = { id: 'owner' };
+    const players = (gateway as any).players;
+    players.set('initial-peer', { roomId: 'ABC123', sceneId: 'initial-ABC123', agoraUid: 'same-uid' });
+    players.set('secret-peer', { roomId: 'ABC123', sceneId: 'secret-beach', agoraUid: 'secret-uid' });
+    gateway.handleAnnounceAgoraUid({ socketId: 'forged', agoraUid: 'allowed-uid' }, client);
+    expect(client.emit).toHaveBeenCalledWith('agora-uid-announced',
+      { socketId: 'initial-peer', agoraUid: 'same-uid', isHost: false });
+    expect(client.emit).not.toHaveBeenCalledWith('agora-uid-announced',
+      expect.objectContaining({ agoraUid: 'secret-uid' }));
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
+    expect(gateway.server.to).not.toHaveBeenCalledWith('ABC123');
+  });
+
+  it('scopes voice signaling and activity to the participant scene', () => {
+    const { player } = prepareRoom();
+    player.sceneId = 'secret-beach';
+    gateway.handleToggleAudioMute({ isMuted: true }, client);
+    gateway.handleToggleAudioDeafen({ isDeafened: true }, client);
+    gateway.handlePlayerSpeaking({ isSpeaking: true }, client);
+    gateway.handleUpdateAudioPosition({ position: { x: 2, y: 3, z: 0 } }, client);
+    const secret = sceneSocketRoom('ABC123', 'secret-beach');
+    expect(gateway.server.to).toHaveBeenCalledWith(secret);
+    expect(client.to).toHaveBeenCalledWith(secret);
+    expect(gateway.server.to).not.toHaveBeenCalledWith('ABC123');
+    expect(client.to).not.toHaveBeenCalledWith('ABC123');
+  });
+
+  it('scopes chat and dice rolls to the scene and tags stored chat history', async () => {
+    const { player } = prepareRoom();
+    player.sceneId = 'secret-beach';
+    prisma.event.create = jest.fn().mockResolvedValue({});
+    prisma.diceRoll.create = jest.fn().mockResolvedValue({});
+    gateway.handleChatMessage({ text: 'enigma secreto' }, client);
+    expect(prisma.event.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ metadata: expect.objectContaining({
+        roomId: 'ABC123', sceneId: 'secret-beach', text: 'enigma secreto',
+      }) }),
+    }));
+    await gateway.handleRollDice({ sides: 20, quantity: 1, modifier: 0 }, client);
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'secret-beach'));
+    expect(gateway.server.to).not.toHaveBeenCalledWith('ABC123');
+  });
+
   it('does not let a player claim global voice in the Agora announcement', () => {
     const { player } = prepareRoom();
     player.isHost = false;
@@ -179,7 +225,7 @@ describe('GameGateway regressions', () => {
     const { player, room } = prepareRoom();
     gateway.handleSetAmbientPreset({ preset: 'beach' }, client);
     expect(room).toMatchObject({ ambientPreset: 'beach' });
-    expect(gateway.server.to).toHaveBeenCalledWith('ABC123');
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
     expect(broadcast).toHaveBeenLastCalledWith('ambient-preset-updated', { preset: 'beach' });
 
     broadcast.mockClear();
