@@ -140,7 +140,7 @@ export class SceneController {
         select: { userId: true, nickname: true },
       }),
       this.prisma.roomSceneAssignment.findMany({
-        where: { roomId }, select: { userId: true, sceneId: true },
+        where: { roomId }, select: { userId: true, sceneId: true, activeSceneId: true },
       }),
       this.prisma.scene.findMany({
         where: { roomId }, orderBy: { position: 'asc' },
@@ -148,6 +148,7 @@ export class SceneController {
       }),
     ]);
     const assigned = new Map(assignments.map(item => [item.userId, item.sceneId]));
+    const active = new Map(assignments.map(item => [item.userId, item.activeSceneId]));
     const seen = new Set<string>();
     return {
       scenes,
@@ -159,6 +160,7 @@ export class SceneController {
         userId: member.userId!,
         nickname: member.nickname,
         sceneId: assigned.get(member.userId!) ?? scenes[0]?.id ?? null,
+        activeSceneId: active.get(member.userId!) ?? scenes[0]?.id ?? null,
       })),
       mode: 'staging',
     };
@@ -243,6 +245,43 @@ export class SceneController {
     const result = this.gateway.sceneTransferPreflightStatus(roomId, requestId);
     if (!result) throw new NotFoundException('Verificação não encontrada ou cancelada.');
     return { ...result, activated: false };
+  }
+
+  /**
+   * Emergency recovery for a future interrupted scene cutover.
+   * Never uses the staged destination; only resets the activated scene.
+   * A compare-and-set update keeps concurrent resets idempotent.
+   */
+  @Post('transfers/:userId/return-to-initial')
+  async returnPlayerToInitial(
+    @Param('roomId') roomId: string,
+    @Param('userId') targetUserId: string,
+    @Req() req: Request,
+  ) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.requireOwner(roomId, user.id);
+    if (targetUserId === room.ownerId) throw new BadRequestException('O mestre permanece na Cena inicial.');
+    const member = await this.prisma.roomMember.findFirst({
+      where: { roomId, userId: targetUserId, leftAt: null },
+      select: { id: true },
+    });
+    if (!member) throw new NotFoundException('Jogador não é membro ativo desta sala.');
+
+    // A nullable activeSceneId means the initial scene. Staging (sceneId)
+    // is deliberately preserved to allow another preflight later.
+    const result = await this.prisma.roomSceneAssignment.updateMany({
+      where: { roomId, userId: targetUserId, activeSceneId: { not: null } },
+      data: { activeSceneId: null },
+    });
+    // Also cancel pending preflight requests, even on an idempotent reset.
+    this.gateway.recoverPlayerToInitial(roomId, targetUserId);
+    return {
+      userId: targetUserId,
+      sceneId: `initial-${roomId}`,
+      activated: false,
+      recovered: result.count > 0,
+      mode: 'recovery',
+    };
   }
 
   /**
