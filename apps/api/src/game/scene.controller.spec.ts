@@ -21,7 +21,15 @@ describe('Scene storage and permissions', () => {
     process.env.LOCAL_UPLOAD_DIR = folder; process.env.LOCAL_MAP_UPLOADS = 'true';
     room = { id: 'ABC123', updatedAt: new Date(), sceneData: null };
     access = { require: jest.fn(async () => room), requireOwner: jest.fn(async () => room) };
-    prisma = { room: { updateMany: jest.fn(async ({ data }) => { room = { ...room, ...data }; return { count: 1 }; }) } };
+    prisma = {
+      room: { updateMany: jest.fn(async ({ data }) => { room = { ...room, ...data }; return { count: 1 }; }) },
+      scene: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'initial-ABC123', name: 'Cena inicial', position: 0 }]),
+        create: jest.fn(async ({ data }) => data),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      roomSceneAssignment: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
     gateway = { publishScene: jest.fn() };
     controller = new SceneController(prisma, { require: jest.fn(async () => ({ id: 'user-1' })) } as any, access, gateway);
   });
@@ -32,6 +40,39 @@ describe('Scene storage and permissions', () => {
     await rm(folder, { recursive: true, force: true });
   });
   const png = () => sharp({ create: { width: 64, height: 32, channels: 3, background: '#a87340' } }).png().toBuffer();
+  it('lets the host list, create and rename scenes without modifying the current map', async () => {
+    room.ownerId = 'user-1';
+    expect(await controller.list('ABC123', req)).toMatchObject({ isHost: true, scenes: [{ id: 'initial-ABC123' }] });
+    const result = await controller.create('ABC123', req, { name: '  Praia  ' });
+    expect(result).toMatchObject({ name: 'Praia', roomId: 'ABC123', position: 1 });
+    expect(prisma.scene.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ roomId: 'ABC123', name: 'Praia' }),
+    }));
+    expect(await controller.rename('ABC123', 'initial-ABC123', req, { name: 'Litoral' }))
+      .toEqual({ id: 'initial-ABC123', name: 'Litoral' });
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+  });
+  it('does not expose other scenes to non-hosts or allow scene changes', async () => {
+    room.ownerId = 'owner-elsewhere';
+    prisma.scene.findMany.mockResolvedValue([
+      { id: 'initial-ABC123', name: 'Cena inicial', position: 0 },
+      { id: 'secret-ABC123', name: 'Mapa secreto', position: 1 },
+    ]);
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'initial-ABC123' });
+    const result = await controller.list('ABC123', req);
+    expect(result.scenes).toEqual([{ id: 'initial-ABC123', name: 'Cena inicial', position: 0 }]);
+    access.requireOwner.mockRejectedValue(new Error('Somente mestre'));
+    await expect(controller.create('ABC123', req, { name: 'Invasão' })).rejects.toThrow('Somente mestre');
+    await expect(controller.rename('ABC123', 'secret-ABC123', req, { name: 'Hacked' })).rejects.toThrow('Somente mestre');
+    expect(prisma.scene.create).not.toHaveBeenCalled();
+    expect(prisma.scene.updateMany).not.toHaveBeenCalled();
+  });
+  it('rejects empty and oversized names, and caps scenes at twenty', async () => {
+    await expect(controller.create('ABC123', req, { name: ' ' })).rejects.toThrow('80 caracteres');
+    await expect(controller.create('ABC123', req, { name: 'a'.repeat(81) })).rejects.toThrow('80 caracteres');
+    prisma.scene.findMany.mockResolvedValue(Array.from({ length: 20 }, (_, i) => ({ position: i })));
+    await expect(controller.create('ABC123', req, { name: '21' })).rejects.toThrow('20 cenas');
+  });
   it('stores WebP with the scene in PostgreSQL and reads it after a restart without local files', async () => {
     const result = await controller.upload('ABC123', req, { buffer: await png() }, '0');
     expect(result.map?.url).toContain('/rooms/ABC123/scene/image');
