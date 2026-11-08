@@ -24,6 +24,7 @@ describe('Scene storage and permissions', () => {
     prisma = {
       room: { updateMany: jest.fn(async ({ data }) => { room = { ...room, ...data }; return { count: 1 }; }) },
       scene: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([{ id: 'initial-ABC123', name: 'Cena inicial', position: 0 }]),
         create: jest.fn(async ({ data }) => data),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -73,8 +74,33 @@ describe('Scene storage and permissions', () => {
     prisma.scene.findMany.mockResolvedValue(Array.from({ length: 20 }, (_, i) => ({ position: i })));
     await expect(controller.create('ABC123', req, { name: '21' })).rejects.toThrow('20 cenas');
   });
+  it('keeps draft scenes isolated from the active VTT map', async () => {
+    room.ownerId = 'user-1';
+    const draft = { id: 'draft-1', roomId: 'ABC123', name: 'Praia', updatedAt: new Date(), sceneData: null, mapUrl: null };
+    prisma.scene.findFirst = jest.fn().mockResolvedValue(draft);
+    prisma.scene.updateMany.mockImplementation(async ({ data }: any) => {
+      Object.assign(draft, data);
+      return { count: 1 };
+    });
+    const edited = await controller.edit('ABC123', 'draft-1', req,
+      { settings: emptyScene().settings, walls: [] }, '0');
+    expect(edited.revision).toBe(1);
+    expect(prisma.scene.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+    expect(gateway.publishScene).not.toHaveBeenCalled();
+    const res = { setHeader: jest.fn() } as any;
+    const loaded = await controller.get('ABC123', 'draft-1', req, res);
+    expect(loaded.scene.revision).toBe(1);
+  });
+  it('rejects a scene id from another room', async () => {
+    room.ownerId = 'user-1';
+    prisma.scene.findFirst = jest.fn().mockResolvedValue(null);
+    const res = { setHeader: jest.fn() } as any;
+    await expect(controller.get('ABC123', 'other-room', req, res)).rejects.toThrow('Cena não encontrada');
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+  });
   it('stores WebP with the scene in PostgreSQL and reads it after a restart without local files', async () => {
-    const result = await controller.upload('ABC123', req, { buffer: await png() }, '0');
+    const result = await controller.upload('ABC123', undefined, req, { buffer: await png() }, '0');
     expect(result.map?.url).toContain('/rooms/ABC123/scene/image');
     expect(result.map).not.toHaveProperty('file');
     expect((await readdir(folder))).toHaveLength(0);
@@ -82,25 +108,25 @@ describe('Scene storage and permissions', () => {
     expect(room.sceneData.map.width).toBe(64);
     const response = { set: jest.fn().mockReturnThis(), send: jest.fn() } as any;
     const restarted = new SceneController(prisma, { require: jest.fn(async () => ({ id: 'user-1' })) } as any, access, gateway);
-    await restarted.image('ABC123', req, response);
+    await restarted.image('ABC123', undefined, req, response);
     expect((await sharp(response.send.mock.calls[0][0]).metadata()).format).toBe('webp');
     access.require.mockRejectedValueOnce(new Error('forbidden'));
-    await expect(controller.image('ABC123', req, response)).rejects.toThrow('forbidden');
+    await expect(controller.image('ABC123', undefined, req, response)).rejects.toThrow('forbidden');
   });
   it('rejects player uploads before decoding or writing an image', async () => {
     access.requireOwner.mockRejectedValue(new Error('owner only'));
-    await expect(controller.upload('ABC123', req, { buffer: await png() }, '0')).rejects.toThrow('owner only');
+    await expect(controller.upload('ABC123', undefined, req, { buffer: await png() }, '0')).rejects.toThrow('owner only');
     expect(await readdir(folder)).toHaveLength(0);
     expect(prisma.room.updateMany).not.toHaveBeenCalled();
   });
   it('rejects uploaded SVG content even if submitted as an image', async () => {
-    await expect(controller.upload('ABC123', req, { buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50"/>') }, '0')).rejects.toThrow('PNG');
+    await expect(controller.upload('ABC123', undefined, req, { buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50"/>') }, '0')).rejects.toThrow('PNG');
     expect(await readdir(folder)).toHaveLength(0);
   });
   it('retains the previous image on revision conflicts', async () => {
-    await controller.upload('ABC123', req, { buffer: await png() }, '0');
+    await controller.upload('ABC123', undefined, req, { buffer: await png() }, '0');
     const oldMap = room.mapUrl;
-    await expect(controller.upload('ABC123', req, { buffer: await png() }, '0')).rejects.toThrow('mudou');
+    await expect(controller.upload('ABC123', undefined, req, { buffer: await png() }, '0')).rejects.toThrow('mudou');
     expect(room.mapUrl).toBe(oldMap);
     expect(await readdir(folder)).toHaveLength(0);
   });
@@ -109,23 +135,23 @@ describe('Scene storage and permissions', () => {
     room.sceneData = { ...emptyScene(), map: { file, width: 64, height: 32 } };
     await writeFile(path.join(folder, file), await sharp(await png()).webp().toBuffer());
     const response = { set: jest.fn().mockReturnThis(), send: jest.fn() } as any;
-    await controller.image('ABC123', req, response);
+    await controller.image('ABC123', undefined, req, response);
     expect((await sharp(response.send.mock.calls[0][0]).metadata()).format).toBe('webp');
   });
   it('removes the database image when the map is deleted', async () => {
-    await controller.upload('ABC123', req, { buffer: await png() }, '0');
-    await controller.remove('ABC123', req, '1');
+    await controller.upload('ABC123', undefined, req, { buffer: await png() }, '0');
+    await controller.remove('ABC123', undefined, req, '1');
     expect(room.mapUrl).toBeNull();
     expect(room.sceneData.map).toBeNull();
   });
   it('saves walls and door state, preserving the map and incrementing revision', async () => {
-    await controller.upload('ABC123', req, { buffer: await png() }, '0');
+    await controller.upload('ABC123', undefined, req, { buffer: await png() }, '0');
     const edit = { settings: { ...emptyScene().settings, scale: 1.5 }, walls: [{ id: 'door', x1: 1, y1: 1, x2: 2, y2: 1, isDoor: true, isOpen: true, blocksAudio: true }] };
-    const result = await controller.edit('ABC123', req, edit, '1');
+    const result = await controller.edit('ABC123', undefined, req, edit, '1');
     expect(result.revision).toBe(2); expect(result.map).not.toBeNull(); expect(result.walls[0].isOpen).toBe(true);
     expect(gateway.publishScene).toHaveBeenLastCalledWith('ABC123', result);
     const response = { setHeader: jest.fn() } as any;
-    expect((await controller.get('ABC123', req, response)).scene).toEqual(result);
+    expect((await controller.get('ABC123', undefined, req, response)).scene).toEqual(result);
   });
   it('defaults old scenes to the former 10x10 grid without changing other settings', async () => {
     const oldScene = emptyScene();
@@ -133,16 +159,16 @@ describe('Scene storage and permissions', () => {
     oldScene.settings.gridOpacity = 0.75;
     room.sceneData = oldScene;
     const response = { setHeader: jest.fn() } as any;
-    const restored = (await controller.get('ABC123', req, response)).scene;
+    const restored = (await controller.get('ABC123', undefined, req, response)).scene;
     expect(restored.settings).toMatchObject({ gridSize: 10, gridOpacity: 0.75 });
     expect(room.sceneData.settings).not.toHaveProperty('gridSize');
     expect(readScene(oldScene).settings.gridSize).toBe(10);
   });
   it('saves and reloads grid size independently of grid opacity', async () => {
-    const edited = await controller.edit('ABC123', req, { settings: { ...emptyScene().settings, gridSize: 20, gridOpacity: 0.55 }, walls: [] }, '0');
+    const edited = await controller.edit('ABC123', undefined, req, { settings: { ...emptyScene().settings, gridSize: 20, gridOpacity: 0.55 }, walls: [] }, '0');
     expect(edited.settings).toMatchObject({ gridSize: 20, gridOpacity: 0.55 });
     const response = { setHeader: jest.fn() } as any;
-    expect((await controller.get('ABC123', req, response)).scene.settings).toMatchObject({ gridSize: 20, gridOpacity: 0.55 });
+    expect((await controller.get('ABC123', undefined, req, response)).scene.settings).toMatchObject({ gridSize: 20, gridOpacity: 0.55 });
     expect(room.sceneData.settings.gridSize).toBe(20);
   });
   it('accepts the grid endpoints and rejects invalid or fractional cell counts', () => {
@@ -160,7 +186,7 @@ describe('Scene storage and permissions', () => {
     const oldWall = { id: 'old', x1: 0, y1: 0, x2: 5, y2: 0, isDoor: true, isOpen: true, blocksAudio: true };
     const newWall = { id: 'new', x1: 0, y1: 1, x2: 10, y2: 1, isDoor: false, isOpen: false, blocksAudio: true,
       openings: [{ id: 'door', type: 'door', position: .5, width: .2, isOpen: false }] };
-    const result = await controller.edit('ABC123', req, { settings: emptyScene().settings, walls: [oldWall, newWall] }, '0');
+    const result = await controller.edit('ABC123', undefined, req, { settings: emptyScene().settings, walls: [oldWall, newWall] }, '0');
     expect(result.walls[0]).not.toHaveProperty('openings');
     expect(result.walls[1].openings).toEqual(newWall.openings);
     expect(room.sceneData.walls).toEqual(result.walls);
@@ -173,14 +199,14 @@ describe('Scene storage and permissions', () => {
   });
   it('keeps editing disabled unless explicitly enabled on the local host', async () => {
     process.env.LOCAL_MAP_UPLOADS = 'false';
-    await expect(controller.edit('ABC123', req, emptyScene(), '0')).rejects.toThrow('habilitado');
+    await expect(controller.edit('ABC123', undefined, req, emptyScene(), '0')).rejects.toThrow('habilitado');
   });
   it('enables hosted beta editing without a local upload flag or persistent map directory', async () => {
     process.env.APP_ENV = 'beta';
     process.env.LOCAL_MAP_UPLOADS = 'false';
     const response = { setHeader: jest.fn() } as any;
-    expect((await controller.get('ABC123', req, response)).editingEnabled).toBe(true);
-    await controller.upload('ABC123', req, { buffer: await png() }, '0');
+    expect((await controller.get('ABC123', undefined, req, response)).editingEnabled).toBe(true);
+    await controller.upload('ABC123', undefined, req, { buffer: await png() }, '0');
     expect(room.mapUrl).toMatch(/^db-webp:/);
     expect(await readdir(folder)).toHaveLength(0);
   });
