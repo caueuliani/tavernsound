@@ -85,6 +85,37 @@ describe('GameGateway regressions', () => {
     expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toBeNull();
   });
 
+  it('cancels transfer preflights and revokes only the recovered player socket', () => {
+    const { player } = prepareRoom();
+    (player as any).userId = 'player-1';
+    (player as any).sceneId = 'initial-ABC123';
+    client.connected = true;
+    const other = {
+      id: 'other-socket', connected: true, emit: jest.fn(), disconnect: jest.fn(),
+    };
+    (gateway as any).players.set(other.id, {
+      id: other.id, userId: 'other-user', roomId: 'ABC123', sceneId: 'initial-ABC123',
+    });
+    (gateway.server.sockets.sockets as Map<string, any>).set(other.id, other);
+    const request = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    expect(request.status).toBe('pending');
+    gateway.recoverPlayerToInitial('ABC123', 'player-1');
+    expect(gateway.sceneTransferPreflightStatus('ABC123', request.requestId!)).toBeNull();
+    expect(client.emit).toHaveBeenCalledWith('scene-recovery-required',
+      expect.objectContaining({ sceneId: 'initial-ABC123' }));
+    expect(client.disconnect).toHaveBeenCalledWith(true);
+    expect(other.emit).not.toHaveBeenCalledWith('scene-recovery-required', expect.anything());
+    expect(other.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('does not disconnect sockets from other rooms with matching user ID', () => {
+    const { player } = prepareRoom();
+    (player as any).userId = 'player-1';
+    client.connected = true;
+    gateway.recoverPlayerToInitial('DEF456', 'player-1');
+    expect(client.disconnect).not.toHaveBeenCalled();
+  });
+
   it('does not accept another voice identity supplied by the client', () => {
     const { player } = prepareRoom();
     client.data.session = { id: 'owner' };
