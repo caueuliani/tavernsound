@@ -39,6 +39,53 @@ export class SceneController {
     this.gateway.publishScene(room.id, visible);
     return visible;
   }
+  // Scene management is additive in this phase. Switching and map editing
+  // continue to use the legacy room scene until the gateway is scene-aware.
+  @Get('list')
+  async list(@Param('roomId') roomId: string, @Req() req: Request) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.require(roomId, user.id);
+    const isHost = room.ownerId === user.id;
+    const scenes = await this.prisma.scene.findMany({
+      where: { roomId }, orderBy: { position: 'asc' },
+      select: { id: true, name: true, position: true },
+    });
+    if (isHost) return { scenes, currentSceneId: scenes[0]?.id ?? null, isHost };
+    const assignment = await this.prisma.roomSceneAssignment.findUnique({
+      where: { roomId_userId: { roomId, userId: user.id } },
+    });
+    const visible = scenes.find(scene => scene.id === assignment?.sceneId) ?? scenes[0];
+    return { scenes: visible ? [visible] : [], currentSceneId: visible?.id ?? null, isHost };
+  }
+
+  @Post('list')
+  async create(@Param('roomId') roomId: string, @Req() req: Request, @Body() body: { name?: unknown }) {
+    const user = await this.sessions.require(req.headers.cookie);
+    await this.access.requireOwner(roomId, user.id);
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 80) throw new BadRequestException('Informe um nome de até 80 caracteres.');
+    const scenes = await this.prisma.scene.findMany({
+      where: { roomId }, select: { position: true }, orderBy: { position: 'desc' }, take: 20,
+    });
+    if (scenes.length >= 20) throw new BadRequestException('Limite de 20 cenas por sala.');
+    const scene = await this.prisma.scene.create({
+      data: { id: randomUUID(), roomId, name, position: (scenes[0]?.position ?? -1) + 1 },
+      select: { id: true, name: true, position: true },
+    });
+    return scene;
+  }
+
+  @Put('list/:sceneId')
+  async rename(@Param('roomId') roomId: string, @Param('sceneId') sceneId: string, @Req() req: Request, @Body() body: { name?: unknown }) {
+    const user = await this.sessions.require(req.headers.cookie);
+    await this.access.requireOwner(roomId, user.id);
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 80) throw new BadRequestException('Informe um nome de até 80 caracteres.');
+    const result = await this.prisma.scene.updateMany({ where: { roomId, id: sceneId }, data: { name } });
+    if (!result.count) throw new NotFoundException('Cena não encontrada.');
+    return { id: sceneId, name };
+  }
+
   @Get()
   async get(@Param('roomId') id: string, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const user = await this.sessions.require(req.headers.cookie);
