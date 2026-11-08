@@ -341,6 +341,10 @@ export default function Grid({ roomId }: GridProps) {
       if (socket.connected) socket.emit('scene-transfer-preflight-response', { requestId: data.requestId, accepted })
     })
 
+    socket.on('scene-recovery-required', (data: { message?: string }) => {
+      setRoomError(data.message || 'O mestre restaurou sua Cena inicial. Atualize a página para reconectar.')
+    })
+
     socket.on('connect_error', () => setRoomError('Não foi possível conectar. Faça login novamente ou verifique o servidor.'))
     socket.on('room-error', (data: { message: string }) => { creatingTokenRef.current = false; setRoomError(data.message) })
 

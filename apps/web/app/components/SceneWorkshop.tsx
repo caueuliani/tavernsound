@@ -13,7 +13,7 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
   const [scenes, setScenes] = useState<{ id: string; name: string; position: number }[]>([])
   const [sceneId, setSceneId] = useState('')
   const [busy, setBusy] = useState(false)
-  const [players, setPlayers] = useState<{ userId: string; nickname: string; sceneId: string | null }[]>([])
+  const [players, setPlayers] = useState<{ userId: string; nickname: string; sceneId: string | null; activeSceneId?: string | null }[]>([])
   const [assignmentsLoading, setAssignmentsLoading] = useState(false)
   const [preflight, setPreflight] = useState<Record<string, { requestId?: string; status: string }>>({})
   useEffect(() => {
@@ -54,6 +54,22 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
     } catch (error) { setError((error as Error).message) }
     finally { setBusy(false) }
   }
+  const recoverToInitial = async (userId: string) => {
+    if (busy || !window.confirm('Restaurar este jogador à Cena inicial? A conexão atual será encerrada e ele deverá atualizar a mesa.')) return
+    setBusy(true); setError('')
+    try {
+      const response = await fetch(apiUrl(`/rooms/${roomId}/scene/transfers/${encodeURIComponent(userId)}/return-to-initial`), {
+        method: 'POST', credentials: 'include', cache: 'no-store',
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Não foi possível restaurar a Cena inicial.')
+      setPlayers(previous => previous.map(player => player.userId === userId
+        ? { ...player, activeSceneId: data.sceneId } : player))
+      setPreflight(previous => { const next = { ...previous }; delete next[userId]; return next })
+    } catch (error) { setError((error as Error).message) }
+    finally { setBusy(false) }
+  }
+
   const checkTransferPreflight = async (userId: string) => {
     if (busy) return
     const previous = preflight[userId]
@@ -124,7 +140,7 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
       </nav>}
       {host && allowed && <section aria-label="Preparar destinos dos jogadores" style={{ marginBottom: 20, padding: 14, border: '1px solid #79552c', borderRadius: 8 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>🎭 Destinos dos personagens (preparação)</h2>
-        <p style={{ fontSize: 13 }}>Defina para qual cena cada jogador deverá ir. <strong>Esta escolha ainda não move o personagem nem altera voz ou mapa da mesa. O botão de verificação só solicita confirmação da conexão, sem teleporte.</strong></p>
+        <p style={{ fontSize: 13 }}>Defina para qual cena cada jogador deverá ir. <strong>Esta escolha ainda não move o personagem nem altera voz ou mapa da mesa. O botão de verificação só solicita confirmação da conexão, sem teleporte. Se uma transferência futura falhar, o mestre poderá restaurar o jogador à Cena inicial.</strong></p>
         {assignmentsLoading && <p>Carregando jogadores…</p>}
         {!assignmentsLoading && players.length === 0 && <p>Nenhum jogador cadastrado como membro ativo desta sala.</p>}
         {players.map(player => <div key={player.userId} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -141,6 +157,10 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
             {preflight[player.userId]?.status === 'pending' || preflight[player.userId]?.status === 'accepted'
               ? 'Consultar confirmação' : 'Verificar conexão'}
           </button>
+          {player.activeSceneId && player.activeSceneId !== `initial-${roomId}` && <button
+            type="button" disabled={busy} onClick={() => void recoverToInitial(player.userId)}>
+            Restaurar Cena inicial
+          </button>}
           {preflight[player.userId] && <span role="status" style={{ fontSize: 12 }}>
             {({ pending: 'Aguardando jogador', accepted: 'Conexão confirmada; transferência NÃO ativada',
               rejected: 'Jogador recusou', expired: 'Verificação expirada' } as Record<string, string>)[preflight[player.userId].status] ?? 'Verificação indisponível'}
