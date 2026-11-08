@@ -15,6 +15,7 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
   const [busy, setBusy] = useState(false)
   const [players, setPlayers] = useState<{ userId: string; nickname: string; sceneId: string | null }[]>([])
   const [assignmentsLoading, setAssignmentsLoading] = useState(false)
+  const [preflight, setPreflight] = useState<Record<string, { requestId?: string; status: string }>>({})
   useEffect(() => {
     let disposed = false
     fetch(apiUrl(`/rooms/${roomId}/scene/list`), { credentials: 'include', cache: 'no-store' }).then(async response => {
@@ -49,6 +50,26 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
       if (!response.ok) throw new Error(data.message || 'Não foi possível preparar o destino do jogador.')
       setPlayers(previous => previous.map(player => player.userId === userId
         ? { ...player, sceneId: data.sceneId } : player))
+      setPreflight(current => { const next = { ...current }; delete next[userId]; return next })
+    } catch (error) { setError((error as Error).message) }
+    finally { setBusy(false) }
+  }
+  const checkTransferPreflight = async (userId: string) => {
+    if (busy) return
+    const previous = preflight[userId]
+    setBusy(true); setError('')
+    try {
+      const checkingExisting = !!previous?.requestId &&
+        (previous.status === 'pending' || previous.status === 'accepted')
+      const endpoint = checkingExisting
+        ? `/rooms/${roomId}/scene/transfers/preflight/${encodeURIComponent(previous.requestId!)}`
+        : `/rooms/${roomId}/scene/transfers/${encodeURIComponent(userId)}/preflight`
+      const response = await fetch(apiUrl(endpoint), {
+        method: checkingExisting ? 'GET' : 'POST', credentials: 'include', cache: 'no-store',
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.message || 'Não foi possível verificar a conexão.')
+      setPreflight(current => ({ ...current, [userId]: { requestId: result.requestId, status: result.status } }))
     } catch (error) { setError((error as Error).message) }
     finally { setBusy(false) }
   }
@@ -103,17 +124,28 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
       </nav>}
       {host && allowed && <section aria-label="Preparar destinos dos jogadores" style={{ marginBottom: 20, padding: 14, border: '1px solid #79552c', borderRadius: 8 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>🎭 Destinos dos personagens (preparação)</h2>
-        <p style={{ fontSize: 13 }}>Defina para qual cena cada jogador deverá ir. <strong>Esta escolha ainda não move o personagem nem altera voz ou mapa da mesa.</strong></p>
+        <p style={{ fontSize: 13 }}>Defina para qual cena cada jogador deverá ir. <strong>Esta escolha ainda não move o personagem nem altera voz ou mapa da mesa. O botão de verificação só solicita confirmação da conexão, sem teleporte.</strong></p>
         {assignmentsLoading && <p>Carregando jogadores…</p>}
         {!assignmentsLoading && players.length === 0 && <p>Nenhum jogador cadastrado como membro ativo desta sala.</p>}
-        {players.map(player => <label key={player.userId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
-          <span>{player.nickname || 'Jogador'}</span>
-          <select value={player.sceneId ?? ''} disabled={busy || scenes.length === 0}
-            onChange={event => void stageAssignment(player.userId, event.target.value)}
-            style={{ padding: 6, background: '#332319', color: '#f4e4bc', border: '1px solid #85613b' }}>
-            {scenes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </select>
-        </label>)}
+        {players.map(player => <div key={player.userId} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span>{player.nickname || 'Jogador'}</span>
+            <select value={player.sceneId ?? ''} disabled={busy || scenes.length === 0}
+              onChange={event => void stageAssignment(player.userId, event.target.value)}
+              style={{ padding: 6, background: '#332319', color: '#f4e4bc', border: '1px solid #85613b' }}>
+              {scenes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          <button type="button" disabled={busy || !player.sceneId || player.sceneId === `initial-${roomId}`}
+            onClick={() => void checkTransferPreflight(player.userId)}>
+            {preflight[player.userId]?.status === 'pending' || preflight[player.userId]?.status === 'accepted'
+              ? 'Consultar confirmação' : 'Verificar conexão'}
+          </button>
+          {preflight[player.userId] && <span role="status" style={{ fontSize: 12 }}>
+            {({ pending: 'Aguardando jogador', accepted: 'Conexão confirmada; transferência NÃO ativada',
+              rejected: 'Jogador recusou', expired: 'Verificação expirada' } as Record<string, string>)[preflight[player.userId].status] ?? 'Verificação indisponível'}
+          </span>}
+        </div>)}
       </section>}
       {error && <p role="alert">{error} <a href="/login" style={{ color: '#ffc568' }}>Entrar</a></p>}
       {!allowed && !error && <p>Carregando cenário…</p>}
