@@ -297,8 +297,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     this.pendingActivations.set(this.activationKey(roomId, userId), { sceneId, timer });
     // Even if the original socket disconnected after DB commit, the timeout
     // restores initial scene+token unless the new scene sends a valid ACK.
-    const socket = this.server?.sockets?.sockets?.get(request.socketId);
-    if (socket?.connected) socket.emit('scene-activation-required', { sceneId, mode: 'reload-required' });
+    // Multiple browser tabs share one user identity. Force every other
+    // session for this player out of the old Socket.IO/RTC transport instead
+    // of leaving a second tab listening on the initial scene.
+    for (const player of this.players.values()) {
+      if (player.roomId !== roomId || player.userId !== userId) continue;
+      const socket = this.server?.sockets?.sockets?.get(player.id);
+      if (!socket?.connected) continue;
+      if (player.id === request.socketId) {
+        socket.emit('scene-activation-required', { sceneId, mode: 'reload-required' });
+      } else {
+        socket.emit('scene-recovery-required', {
+          sceneId, message: 'Sua cena mudou em outra aba. Atualize esta aba para entrar na cena ativa.',
+        });
+        socket.disconnect(true);
+      }
+    }
   }
 
   sceneTransferPreflightStatus(roomId: string, requestId: string) {
