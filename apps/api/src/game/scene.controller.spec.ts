@@ -29,7 +29,12 @@ describe('Scene storage and permissions', () => {
         create: jest.fn(async ({ data }) => data),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
-      roomSceneAssignment: { findUnique: jest.fn().mockResolvedValue(null) },
+      roomSceneAssignment: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn().mockImplementation(async ({ create }: any) => create),
+      },
+      roomMember: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
     };
     gateway = { publishScene: jest.fn() };
     controller = new SceneController(prisma, { require: jest.fn(async () => ({ id: 'user-1' })) } as any, access, gateway);
@@ -73,6 +78,50 @@ describe('Scene storage and permissions', () => {
     await expect(controller.create('ABC123', req, { name: 'a'.repeat(81) })).rejects.toThrow('80 caracteres');
     prisma.scene.findMany.mockResolvedValue(Array.from({ length: 20 }, (_, i) => ({ position: i })));
     await expect(controller.create('ABC123', req, { name: '21' })).rejects.toThrow('20 cenas');
+  });
+  it('stages a player scene but keeps draft maps private until activation', async () => {
+    room.ownerId = 'user-1';
+    prisma.scene.findMany.mockResolvedValue([
+      { id: 'initial-ABC123', name: 'Cena inicial', position: 0 },
+      { id: 'draft-beach', name: 'Praia', position: 1 },
+    ]);
+    prisma.scene.findFirst.mockImplementation(async ({ where }: any) =>
+      where.id === 'draft-beach'
+        ? { id: 'draft-beach', roomId: 'ABC123' }
+        : { id: 'initial-ABC123', roomId: 'ABC123' });
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+    prisma.roomMember.findMany.mockResolvedValue([{ userId: 'player-1', nickname: 'Aventureiro' }]);
+    const staged = await controller.stagePlayerScene('ABC123', 'player-1', req, { sceneId: 'draft-beach' });
+    expect(staged).toMatchObject({ userId: 'player-1', sceneId: 'draft-beach', mode: 'staging' });
+    expect(prisma.roomSceneAssignment.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { roomId_userId: { roomId: 'ABC123', userId: 'player-1' } },
+    }));
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+    expect(gateway.publishScene).not.toHaveBeenCalled();
+
+    room.ownerId = 'different-owner';
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'draft-beach' });
+    const list = await controller.list('ABC123', req);
+    expect(list.scenes).toEqual([{ id: 'initial-ABC123', name: 'Cena inicial', position: 0 }]);
+    await expect(controller.get('ABC123', 'draft-beach', req, { setHeader: jest.fn() } as any))
+      .rejects.toThrow('Cena não disponível');
+  });
+  it('requires active membership, a scene in the room, and GM permission for staging', async () => {
+    room.ownerId = 'user-1';
+    prisma.scene.findFirst.mockResolvedValue({ id: 'draft-beach' });
+    await expect(controller.stagePlayerScene('ABC123', 'outsider', req, { sceneId: 'draft-beach' }))
+      .rejects.toThrow('membro ativo');
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+    prisma.scene.findFirst.mockResolvedValue(null);
+    await expect(controller.stagePlayerScene('ABC123', 'player-1', req, { sceneId: 'foreign' }))
+      .rejects.toThrow('não pertence');
+    await expect(controller.stagePlayerScene('ABC123', 'user-1', req, { sceneId: 'draft-beach' }))
+      .rejects.toThrow('mestre não recebe');
+    access.requireOwner.mockRejectedValue(new Error('Somente mestre'));
+    await expect(controller.assignments('ABC123', req)).rejects.toThrow('Somente mestre');
+    await expect(controller.stagePlayerScene('ABC123', 'player-1', req, { sceneId: 'draft-beach' }))
+      .rejects.toThrow('Somente mestre');
+    expect(prisma.roomSceneAssignment.upsert).not.toHaveBeenCalled();
   });
   it('keeps draft scenes isolated from the active VTT map', async () => {
     room.ownerId = 'user-1';
