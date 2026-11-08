@@ -927,20 +927,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
-    // Alternative scene gameplay mutation requires the per-scene rules engine.
-    // Until then, entry is read-only to avoid writing to initial-scene tokens.
-    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
-      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
-      return;
-    }
-
     const room = this.rooms.get(player.roomId);
     if (!room) return;
+    const scene = this.sceneState(room, player.sceneId);
+    if (!scene) return;
 
     const id = player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex');
     const token: TokenData = {
       id,
-      sceneId: `initial-${player.roomId}`,
+      sceneId: player.sceneId ?? `initial-${player.roomId}`,
       kind: player.isHost ? 'SCENERY' : 'PLAYER',
       x: data.x,
       y: data.y,
@@ -954,7 +949,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       client.emit('token-created', player.tokens[0]);
       return { ok: true };
     }
-    if (!isTokenGridCoordinate(data.x, room.gridSize ?? 10) || !isTokenGridCoordinate(data.y, room.gridSize ?? 10) || !validTokenPosition(tokenCenter(data.x, data.y, room.gridSize ?? 10), 1, room.gridSize ?? 10, movementSegments(room.walls ?? []))) {
+    if (!isTokenGridCoordinate(data.x, scene.gridSize ?? 10) || !isTokenGridCoordinate(data.y, scene.gridSize ?? 10) || !validTokenPosition(tokenCenter(data.x, data.y, scene.gridSize ?? 10), 1, scene.gridSize ?? 10, movementSegments(scene.walls ?? []))) {
       client.emit('room-error', { message: 'Posição indisponível para criar o token.' });
       return { ok: false };
     }
@@ -983,7 +978,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     }
 
     player.tokens.push(token);
-    room.tokens.push(token);
+    scene.tokens.push(token);
 
     this.server.to(this.tokenTransport(player.roomId, token)).emit('token-created', token);
     console.log(`🎯 Token criado por ${token.playerName} em (${data.x},${data.y}) na sala ${player.roomId}`);
@@ -997,24 +992,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
-    // Alternative token editing will be enabled only after scene-aware
-    // ownership, persistence and movement validation are fully coordinated.
-    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
-      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
-      return;
-    }
-
     const room = this.rooms.get(player.roomId);
     if (!room) return;
+    const scene = this.sceneState(room, player.sceneId);
+    if (!scene) return;
 
     const token = player.isHost
-      ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id)
+      ? scene.tokens.find(t => t.id === data.tokenId && t.playerId === t.id)
       : player.tokens.find(t => t.id === data.tokenId && t.kind === 'PLAYER');
     if (!token) return;
 
-    const segments = movementSegments(room.walls ?? []);
-    if (!isTokenGridCoordinate(data.x, room.gridSize ?? 10) || !isTokenGridCoordinate(data.y, room.gridSize ?? 10) ||
-      !validTokenMove(tokenCenter(token.x, token.y, room.gridSize ?? 10), tokenCenter(data.x, data.y, room.gridSize ?? 10), token.size, room.gridSize ?? 10, segments)) {
+    const segments = movementSegments(scene.walls ?? []);
+    if (!isTokenGridCoordinate(data.x, scene.gridSize ?? 10) || !isTokenGridCoordinate(data.y, scene.gridSize ?? 10) ||
+      !validTokenMove(tokenCenter(token.x, token.y, scene.gridSize ?? 10), tokenCenter(data.x, data.y, scene.gridSize ?? 10), token.size, scene.gridSize ?? 10, segments)) {
       client.emit('token-moved', { tokenId: token.id, x: token.x, y: token.y, playerId: token.playerId });
       return;
     }
@@ -1022,7 +1012,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     token.x = data.x;
     token.y = data.y;
 
-    const roomToken = room.tokens.find(t => t.id === data.tokenId);
+    const roomToken = scene.tokens.find(t => t.id === data.tokenId);
     if (roomToken) {
       roomToken.x = data.x;
       roomToken.y = data.y;
@@ -1158,20 +1148,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
-    // Alternative token editing will be enabled only after scene-aware
-    // ownership, persistence and movement validation are fully coordinated.
-    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
-      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
-      return;
-    }
-
     const room = this.rooms.get(player.roomId);
     if (!room) return;
+    const scene = this.sceneState(room, player.sceneId);
+    if (!scene) return;
 
     const ownsToken = player.tokens.some(t => t.id === data.tokenId);
     if (!player.isHost && !ownsToken) return;
 
-    const token = room.tokens.find(t => t.id === data.tokenId);
+    const token = scene.tokens.find(t => t.id === data.tokenId);
     if (!token) return;
     token.hp = data.hp;
     token.maxHp = data.maxHp;
