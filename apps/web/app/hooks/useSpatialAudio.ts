@@ -220,7 +220,23 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       setCameraEnabled(false)
       setLocalCameraTrack(null)
       setRemoteVideoTracks(new Map())
+      setLocalAudioTrack(null)
       localTrackRef.current = null
+      for (const audioNode of remoteAudioNodesRef.current.values()) {
+        try {
+          audioNode.source.disconnect()
+          audioNode.pannerNode.disconnect()
+          audioNode.filterNode.disconnect()
+          audioNode.gainNode.disconnect()
+        } catch {}
+      }
+      remoteAudioNodesRef.current.clear()
+      socketToAgoraMapRef.current.clear()
+      agoraVoiceRolesRef.current.clear()
+      setRemoteUsers(new Set())
+      const failedContext = audioContextRef.current
+      audioContextRef.current = null
+      if (failedContext) void failedContext.close().catch(() => {})
       const failedClient = clientRef.current
       clientRef.current = null
       myAgoraUidRef.current = ''
@@ -497,6 +513,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       setCameraEnabled(false)
       setLocalCameraTrack(null)
       setRemoteVideoTracks(new Map())
+      setLocalAudioTrack(null)
       localTrackRef.current = null
       myAgoraUidRef.current = ''
       const oldClient = clientRef.current
