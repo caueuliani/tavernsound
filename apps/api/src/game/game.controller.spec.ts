@@ -10,16 +10,16 @@ describe('Voice authorization', () => {
   const req = { headers: { cookie: 'test-cookie' } } as any;
   beforeEach(() => {
     sessions = { require: jest.fn().mockResolvedValue({ id: 'user', sid: 'session', exp: Math.floor(Date.now() / 1000) + 600 }), voiceUid: jest.fn().mockReturnValue('server-assigned-uid') };
-    access = { require: jest.fn().mockResolvedValue({}), requireSceneMedia: jest.fn().mockResolvedValue({ id: 'initial-ABC123' }) };
+    access = { require: jest.fn().mockResolvedValue({}), requireLegacyMedia: jest.fn().mockResolvedValue({}), requireSceneMedia: jest.fn().mockResolvedValue({ id: 'initial-ABC123' }) };
     controller = new GameController(sessions, access, new TestSafetyService({} as any));
   });
   it('checks session before room access', async () => {
     sessions.require.mockRejectedValue(new Error('unauthenticated'));
     await expect(controller.generateToken('ABC123', req)).rejects.toThrow('unauthenticated');
-    expect(access.require).not.toHaveBeenCalled();
+    expect(access.requireLegacyMedia).not.toHaveBeenCalled();
   });
   it('does not issue voice credentials to someone outside the room', async () => {
-    access.require.mockRejectedValue(new Error('forbidden'));
+    access.requireLegacyMedia.mockRejectedValue(new Error('forbidden'));
     await expect(controller.generateToken('ABC123', req)).rejects.toThrow('forbidden');
   });
   it('rejects requests for staged or foreign scene media before issuing an Agora token', async () => {
@@ -28,6 +28,14 @@ describe('Voice authorization', () => {
     try {
       await expect(controller.generateToken('ABC123', req, 'secret-scene')).rejects.toThrow('inactive scene');
       expect(access.requireSceneMedia).toHaveBeenCalledWith('ABC123', 'user', 'secret-scene');
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+  it('denies legacy room-channel credentials when a player is activated in a different scene', async () => {
+    access.requireLegacyMedia.mockRejectedValue(new Error('Use o canal da cena ativa'));
+    const spy = jest.spyOn(RtcTokenBuilder, 'buildTokenWithAccount');
+    try {
+      await expect(controller.generateToken('ABC123', req)).rejects.toThrow('cena ativa');
       expect(spy).not.toHaveBeenCalled();
     } finally { spy.mockRestore(); }
   });
@@ -59,7 +67,7 @@ describe('Voice authorization', () => {
       const result = await controller.generateToken('ABC123', req);
       expect(result.uid).toBe('server-assigned-uid');
       expect(result.expiresAt).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 300);
-      expect(access.require).toHaveBeenCalledWith('ABC123', 'user');
+      expect(access.requireLegacyMedia).toHaveBeenCalledWith('ABC123', 'user');
       expect(builder).toHaveBeenCalledWith('test-app', 'test-certificate', 'ABC123', 'server-assigned-uid', expect.any(Number), result.expiresAt);
     } finally {
       builder.mockRestore();
