@@ -49,7 +49,7 @@ test('never joins the replacement scene before the old channel leaves', async ()
     return 'new-uid'
   })
   await Promise.resolve()
-  assert.deepEqual(calls, [])
+  assert.equal(calls.length, 0)
   calls.push('leave-old')
   completeLeave()
   assert.equal(await joining, 'new-uid')
