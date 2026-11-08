@@ -199,7 +199,7 @@ describe('GameGateway regressions', () => {
         roomId: 'ABC123', sceneId: 'secret-beach', text: 'enigma secreto',
       }) }),
     }));
-    await gateway.handleRollDice({ type: 'd20', quantity: 1, modifier: 0 }, client);
+    await gateway.handleRollDice({ sides: 20, quantity: 1, modifier: 0 }, client);
     expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'secret-beach'));
     expect(gateway.server.to).not.toHaveBeenCalledWith('ABC123');
   });
