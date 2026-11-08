@@ -21,6 +21,7 @@ import { sceneryNameOrFallback } from './scenery-token-name';
 import { parseDiceRequest, rollDice } from './dice.util';
 import { readScene } from './scene.util';
 import type { SceneWall } from './scene.util';
+import { sceneSocketRoom } from './scene-media.util';
 import { isTokenGridCoordinate, movementSegments, tokenCenter, tokenSize, validTokenMove, validTokenPosition } from './token-movement';
 
 interface TokenData {
@@ -322,11 +323,20 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       client.emit('room-error', { message: 'Este cliente já entrou em uma sala.' });
       return;
     }
-    try { await this.access.require(data?.roomId, session.id); }
+    let activeScene: Awaited<ReturnType<RoomAccessService['activeSceneForUser']>>;
+    try { activeScene = await this.access.activeSceneForUser(data?.roomId, session.id); }
     catch {
       client.emit('room-error', { message: 'Sala indisponível ou conta não autorizada. Peça acesso ao mestre.' });
       return;
     }
+    // The old VTT still broadcasts tokens, fog, voice identities and chat to
+    // the room-wide socket. Deny off-initial active players until every legacy
+    // event is scoped: simply joining another scene room is NOT isolation.
+    if (activeScene.sceneId !== activeScene.initialSceneId) {
+      client.emit('room-error', { message: 'Esta cena requer a atualização do protocolo da mesa. Retorne à cena inicial com o mestre.' });
+      return;
+    }
+    const activeSocketRoom = sceneSocketRoom(data.roomId, activeScene.sceneId);
     let room = this.rooms.get(data.roomId);
 
     // Sala não está na memória: servidor foi reiniciado, recarregar do banco
@@ -346,7 +356,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         : null;
       // Tokens do banco usam o próprio id como playerId para garantir chaves únicas no frontend
       const restoredScene = readScene(dbRoom.sceneData);
-      const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
+      const restoredTokens: TokenData[] = dbRoom.tokens.filter(t => !t.sceneId || t.sceneId === activeScene.initialSceneId).map(t => ({
         id: t.id,
         sceneId: t.sceneId ?? `initial-${data.roomId}`,
         kind: t.kind,
@@ -464,6 +474,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     this.players.set(client.id, playerData);
     room.players.set(client.id, playerData);
     client.join(data.roomId);
+    client.join(activeSocketRoom);
+    client.emit('scene-transport-ready', { sceneId: activeScene.sceneId, isolated: false });
 
     const [recentRolls, chatEvents] = await Promise.all([
       this.prisma.diceRoll.findMany({
@@ -486,6 +498,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       testEndsAt: null,
       roomId: data.roomId,
       roomName: room.name,
+      sceneId: activeScene.sceneId,
       playerName,
       isHost,
       players: Array.from(room.players.values()).map(p => ({

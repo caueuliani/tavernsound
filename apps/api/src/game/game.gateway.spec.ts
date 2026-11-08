@@ -1,6 +1,7 @@
 import { GameGateway } from './game.gateway';
 import { TestSafetyService } from '../safety/test-safety.service';
 import { createHash } from 'crypto';
+import { sceneSocketRoom } from './scene-media.util';
 
 describe('GameGateway regressions', () => {
   let gateway: GameGateway;
@@ -19,7 +20,7 @@ describe('GameGateway regressions', () => {
       event: { findMany: jest.fn().mockResolvedValue([]) },
     };
     sessions = { require: jest.fn(), on: jest.fn(), voiceUid: jest.fn().mockReturnValue('allowed-uid') };
-    access = { require: jest.fn() };
+    access = { require: jest.fn(), activeSceneForUser: jest.fn().mockResolvedValue({ sceneId: 'initial-ABC123', initialSceneId: 'initial-ABC123' }) };
     gateway = new GameGateway(prisma, sessions, access, new TestSafetyService(prisma));
     client = { id: 'socket-1', data: {}, handshake: { headers: {} }, emit: jest.fn(), disconnect: jest.fn(), join: jest.fn(), to: jest.fn().mockReturnValue({ emit: jest.fn() }) };
     broadcast = jest.fn();
@@ -28,7 +29,7 @@ describe('GameGateway regressions', () => {
 
   it('does not load or disclose a private room to an unauthorized account', async () => {
     client.data.session = { id: 'intruder' };
-    access.require.mockRejectedValue(new Error('denied'));
+    access.activeSceneForUser.mockRejectedValue(new Error('denied'));
     await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
     expect((gateway as any).players.size).toBe(0);
     expect(client.emit).toHaveBeenCalledWith('room-error', expect.any(Object));
@@ -36,8 +37,18 @@ describe('GameGateway regressions', () => {
 
   it('rejects anonymous joins before checking room existence', async () => {
     await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
-    expect(access.require).not.toHaveBeenCalled();
+    expect(access.activeSceneForUser).not.toHaveBeenCalled();
     expect(client.emit).toHaveBeenCalledWith('room-error', expect.any(Object));
+  });
+
+  it('rejects a player with a non-initial activated scene before legacy socket admission', async () => {
+    client.data.session = { id: 'player', sid: 'session' };
+    access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
+    await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
+    expect(client.emit).toHaveBeenCalledWith('room-error', expect.objectContaining({ message: expect.stringContaining('protocolo') }));
+    expect(client.join).not.toHaveBeenCalled();
+    expect(prisma.room.findUnique).not.toHaveBeenCalled();
+    expect((gateway as any).players.size).toBe(0);
   });
 
   it('does not accept another voice identity supplied by the client', () => {
@@ -68,6 +79,9 @@ describe('GameGateway regressions', () => {
     await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
     const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
     expect(joined).toBeDefined();
+    expect(joined.sceneId).toBe('initial-ABC123');
+    expect(client.join).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
+    expect(client.emit).toHaveBeenCalledWith('scene-transport-ready', { sceneId: 'initial-ABC123', isolated: false });
     return { tokenId, joined, player: (gateway as any).players.get(client.id) };
   };
 
@@ -86,6 +100,24 @@ describe('GameGateway regressions', () => {
     expect(client.to().emit).toHaveBeenCalledWith('token-moved', expect.objectContaining({ tokenId, playerId: tokenId }));
     gateway.handleUpdateAudioPosition({ position: { x: 9, y: 9, z: 0 } }, client);
     expect(player.audioPosition).toBeUndefined();
+  });
+
+  it('excludes all off-scene tokens from legacy room restoration', async () => {
+    const id = createHash('sha256').update('ABC123:player').digest('hex');
+    client.data.session = { id: 'owner', sid: 'session' };
+    prisma.room.findUnique.mockResolvedValue({
+      id: 'ABC123', name: 'Table', ownerId: 'owner', createdAt: new Date(), fogOfWarData: null, mapUrl: null,
+      sceneData: null,
+      tokens: [
+        { id: 'initial-npc', kind: 'SCENERY', sceneId: 'initial-ABC123', x: 1, y: 2, color: '#ffffff', name: 'Guard' },
+        { id: 'secret-npc', kind: 'SCENERY', sceneId: 'beach-123', x: 3, y: 4, color: '#ffffff', name: 'Secret' },
+        { id, kind: 'PLAYER', sceneId: null, x: 5, y: 6, color: '#ffffff', name: 'Legacy' },
+      ],
+    });
+    await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
+    const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
+    expect(joined.tokens.map((token: any) => token.id).sort()).toEqual(['initial-npc', id].sort());
+    expect(JSON.stringify(joined)).not.toContain('secret-npc');
   });
 
   it('tags old tokens as part of the initial scene when restoring the room', async () => {
