@@ -96,6 +96,26 @@ describe('Beta limits (transaction double)', () => {
     await expect(safety.voiceDeadline('ABC123', 'owner', 'sid')).rejects.toThrow('Cota diária de voz');
     await expect(safety.heartbeat('conn')).resolves.toBeUndefined();
   });
+  it('creates the initial Scene atomically with the new beta room', async () => {
+    const room = await safety.createRoom({ id: 'ABC123', name: 'Mesa', ownerId: 'owner' });
+    expect(room).toMatchObject({
+      scenes: { create: { id: 'initial-ABC123', name: 'Cena inicial', position: 0 } },
+    });
+    expect(db.rooms).toHaveLength(1);
+  });
+  it('creates the same initial scene outside beta mode', async () => {
+    process.env.APP_ENV = 'development';
+    process.env.TEST_MODE = 'false';
+    const create = jest.fn().mockImplementation(({ data }) => data);
+    const local = new TestSafetyService({ room: { create } } as any);
+    await local.createRoom({ id: 'DEF456', name: 'Mesa local', ownerId: 'owner' });
+    expect(create).toHaveBeenCalledWith({
+      data: {
+        id: 'DEF456', name: 'Mesa local', ownerId: 'owner',
+        scenes: { create: { id: 'initial-DEF456', name: 'Cena inicial', position: 0 } },
+      },
+    });
+  });
   it('does not let owner A create a second room even with concurrent attempts', async () => {
     const results = await Promise.allSettled(['ABC123', 'DEF456'].map(id => safety.createRoom({ id, name: 'Test', ownerId: 'owner' })));
     expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);

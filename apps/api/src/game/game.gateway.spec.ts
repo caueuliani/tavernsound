@@ -88,6 +88,21 @@ describe('GameGateway regressions', () => {
     expect(player.audioPosition).toBeUndefined();
   });
 
+  it('tags old tokens as part of the initial scene when restoring the room', async () => {
+    const { joined } = await joinPersistedRoom('owner', 'owner');
+    expect(joined.tokens[0].sceneId).toBe('initial-ABC123');
+  });
+
+  it('persists the initial scene on every newly created token', async () => {
+    prepareRoom();
+    await gateway.handleCreateToken({ tokenId: 'npc', x: 1, y: 2, color: 0xff9d00 }, client);
+    expect(prisma.token.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ roomId: 'room-a', sceneId: 'initial-room-a' }),
+    });
+    expect(broadcast).toHaveBeenCalledWith('token-created',
+      expect.objectContaining({ sceneId: 'initial-room-a' }));
+  });
+
   it('still reconnects a normal player to their persisted personal token', async () => {
     const { tokenId, joined, player } = await joinPersistedRoom('player', 'player');
     expect(joined).toMatchObject({ isHost: false, tokens: [{ id: tokenId, playerId: client.id }] });

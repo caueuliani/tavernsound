@@ -71,10 +71,19 @@ export class TestSafetyService {
   }
 
   async createRoom(data: { id: string; name: string; ownerId: string }) {
-    if (!this.enabled) return this.prisma.room.create({ data });
+    // Keep the initial map and its parent room in a single transaction even
+    // outside beta. A scene is mandatory for every room created after the
+    // multi-scene backfill; the historical Room fields remain the live map.
+    const initialScene = {
+      id: `initial-${data.id}`,
+      name: 'Cena inicial',
+      position: 0,
+    };
+    const roomData = { ...data, scenes: { create: initialScene } };
+    if (!this.enabled) return this.prisma.room.create({ data: roomData });
     return this.locked(async (_state, tx) => {
       if (await tx.room.count({ where: { ownerId: data.ownerId } }) >= 1) throw new ForbiddenException('A beta permite uma única sala. Utilize a sala existente.');
-      return tx.room.create({ data });
+      return tx.room.create({ data: roomData });
     });
   }
 

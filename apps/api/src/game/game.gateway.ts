@@ -25,6 +25,7 @@ import { isTokenGridCoordinate, movementSegments, tokenCenter, tokenSize, validT
 
 interface TokenData {
   id: string;
+  sceneId?: string;
   kind: 'PLAYER' | 'SCENERY';
   x: number;
   y: number;
@@ -347,6 +348,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       const restoredScene = readScene(dbRoom.sceneData);
       const restoredTokens: TokenData[] = dbRoom.tokens.map(t => ({
         id: t.id,
+        sceneId: t.sceneId ?? `initial-${data.roomId}`,
         kind: t.kind,
         x: t.positionX ?? t.x,
         y: t.positionY ?? t.y,
@@ -625,6 +627,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const id = player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex');
     const token: TokenData = {
       id,
+      sceneId: `initial-${player.roomId}`,
       kind: player.isHost ? 'SCENERY' : 'PLAYER',
       x: data.x,
       y: data.y,
@@ -649,6 +652,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         data: {
           id: token.id,
           roomId: player.roomId,
+          sceneId: token.sceneId,
           kind: token.kind,
           name: token.playerName || 'Token',
           x: Math.floor(data.x),
