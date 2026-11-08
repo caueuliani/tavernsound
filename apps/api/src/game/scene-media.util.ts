@@ -11,3 +11,11 @@ export function sceneMediaChannel(roomId: string, sceneId: string): string {
   const digest = createHash('sha256').update(sceneId).digest('hex').slice(0, 24);
   return `${roomId}-scene-${digest}`;
 }
+
+/**
+ * Socket.IO subscription grouping is independent of the public room
+ * namespace and cannot be picked arbitrarily by the browser.
+ */
+export function sceneSocketRoom(roomId: string, sceneId: string): string {
+  return `scene:${sceneMediaChannel(roomId, sceneId)}`;
+}
