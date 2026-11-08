@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useVoiceDetection } from './useVoiceDetection'
 import { apiUrl } from '../lib/api-url'
 import { installAgoraCompatibility } from '../lib/agora-compat'
+import { readRtcCredentials, rtcTokenPath } from '../lib/scene-rtc'
 import { remoteVoiceMode, type VoiceRole } from './voice-mode'
 import { wallOcclusionCount, type WallGeometry } from '../lib/scene-geometry'
 
@@ -19,6 +20,7 @@ interface WallData extends WallGeometry { id: string }
 interface SpatialAudioConfig {
   onLocalSpeakingChange?: (speaking: boolean) => void
   channelName: string
+  sceneId?: string // Undefined retains legacy room-channel operation.
   isHost: boolean
   myToken: Token | null
   allTokens: Map<string, Token>
@@ -39,6 +41,7 @@ interface RemoteAudioNode {
 export function useSpatialAudio(config: SpatialAudioConfig) {
   const {
     channelName,
+    sceneId,
     isHost,
     myToken,
     allTokens,
@@ -49,6 +52,7 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
   } = config
 
   const clientRef = useRef<any>(null)
+  const pendingLeaveRef = useRef<Promise<void>>(Promise.resolve())
   const localTrackRef = useRef<any>(null)
   const cameraTrackRef = useRef<any>(null)
   const [cameraEnabled, setCameraEnabled] = useState(false)
@@ -211,8 +215,17 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       clearTimeout(watchdog)
       setAudioError(message)
       setIsConnected(false)
-      localTrackRef.current?.close()
-      void clientRef.current?.leave().catch(() => {})
+      try { cameraTrackRef.current?.close() } catch {}
+      cameraTrackRef.current = null
+      setCameraEnabled(false)
+      setLocalCameraTrack(null)
+      setRemoteVideoTracks(new Map())
+      try { localTrackRef.current?.close() } catch {}
+      localTrackRef.current = null
+      const failedClient = clientRef.current
+      clientRef.current = null
+      myAgoraUidRef.current = ''
+      if (failedClient) pendingLeaveRef.current = Promise.resolve().then(() => failedClient.leave()).then(() => {}, () => {})
     }
 
     const initAgora = async () => {
@@ -390,14 +403,14 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         }
 
         const fetchVoiceToken = async () => {
-          const response = await fetch(apiUrl(`/agora/token?channelName=${encodeURIComponent(channelName)}`), {
+          const response = await fetch(apiUrl(rtcTokenPath(channelName, sceneId)), {
             credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(10000),
           })
           const result = await response.json()
-          if (!response.ok || typeof result.token !== 'string' || typeof result.uid !== 'string') {
+          if (!response.ok) {
             throw new Error(typeof result.message === 'string' ? result.message : 'Não foi possível autorizar a voz nesta sala.')
           }
-          return result as { token: string; uid: string }
+          return readRtcCredentials(result, channelName, sceneId)
         }
         setAudioStatus('Aguardando permissão do microfone…')
         const localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
@@ -408,13 +421,20 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
         setLocalAudioTrack(localAudioTrack)
 
         const authorization = await fetchVoiceToken()
-        if (cancelled) return
-        const uid = await client.join(appId, channelName, authorization.token, authorization.uid)
+        if (cancelled) { localAudioTrack.close(); return }
+        // Close the previous scene's Agora session before joining the next one.
+        await pendingLeaveRef.current
+        if (cancelled) { localAudioTrack.close(); return }
+        const uid = await client.join(appId, authorization.channelName, authorization.token, authorization.uid)
         if (cancelled) { await client.leave(); return }
         client.on('token-privilege-will-expire', async () => {
           try {
             const renewed = await fetchVoiceToken()
-            if (!cancelled) await client.renewToken(renewed.token)
+            if (!cancelled && renewed.channelName === authorization.channelName) {
+              await client.renewToken(renewed.token)
+            } else if (!cancelled) {
+              fail('A cena ativa mudou. Reconecte o áudio para usar o canal correto.')
+            }
           } catch {
             if (!cancelled) {
               fail('A autorização de áudio expirou. Tente conectar novamente.')
@@ -469,25 +489,25 @@ export function useSpatialAudio(config: SpatialAudioConfig) {
       setRemoteUsers(new Set())
       setPlaybackBlocked(false)
 
-      if (cameraTrackRef.current) {
-        cameraTrackRef.current.close()
-        cameraTrackRef.current = null
-      }
+      // Cut audio and video capture immediately, before async Agora leave.
+      // The next scene must not inherit a running webcam.
+      try { cameraTrackRef.current?.close() } catch {}
+      cameraTrackRef.current = null
       setCameraEnabled(false)
       setLocalCameraTrack(null)
       setRemoteVideoTracks(new Map())
-      if (localTrackRef.current) {
-        localTrackRef.current.close()
-      }
-      if (clientRef.current) {
-        void clientRef.current.leave().catch(() => {})
-      }
-      if (audioContextRef.current) {
-        void audioContextRef.current.close().catch(() => {})
-      }
+      try { localTrackRef.current?.close() } catch {}
+      localTrackRef.current = null
+      myAgoraUidRef.current = ''
+      const oldClient = clientRef.current
+      clientRef.current = null
+      if (oldClient) pendingLeaveRef.current = Promise.resolve().then(() => oldClient.leave()).then(() => {}, () => {})
+      const oldContext = audioContextRef.current
+      audioContextRef.current = null
+      if (oldContext) void oldContext.close().catch(() => {})
       setIsConnected(false)
     }
-  }, [channelName, maxDistance, socket, mySocketId, attempt])
+  }, [channelName, sceneId, maxDistance, socket, mySocketId, attempt])
 
   useEffect(() => {
     updateSpatialAudio()
