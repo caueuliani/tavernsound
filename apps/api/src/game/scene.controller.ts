@@ -3,7 +3,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request, Response } from 'express';
 import { readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { PrismaService } from '../prisma/prisma.service';
 import { SessionService } from '../auth/session.service';
@@ -248,6 +248,63 @@ export class SceneController {
   }
 
   /**
+   * Internal coordinated cutover (intentionally no UI yet).
+   * Disabled by default until the client can leave Agora, reload the canvas
+   * and acknowledge a new scene; both feature flags must be explicit.
+   */
+  @Post('transfers/:userId/activate')
+  async activatePlayerScene(
+    @Param('roomId') roomId: string,
+    @Param('userId') targetUserId: string,
+    @Req() req: Request,
+    @Body() body: { requestId?: unknown },
+  ) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.requireOwner(roomId, user.id);
+    if (process.env.SCENE_LIVE_TRANSFERS !== 'true' || process.env.SCENE_SCOPED_ADMISSION !== 'true') {
+      throw new ForbiddenException('A ativação de cenários ainda não está habilitada.');
+    }
+    if (targetUserId === room.ownerId) throw new BadRequestException('O mestre permanece na Cena inicial.');
+    const requestId = typeof body?.requestId === 'string' ? body.requestId : '';
+    if (!/^[a-f0-9-]{36}$/.test(requestId)) throw new BadRequestException('Confirmação de transferência inválida.');
+    const [member, assignment] = await Promise.all([
+      this.prisma.roomMember.findFirst({
+        where: { roomId, userId: targetUserId, leftAt: null }, select: { id: true },
+      }),
+      this.prisma.roomSceneAssignment.findUnique({
+        where: { roomId_userId: { roomId, userId: targetUserId } },
+        select: { sceneId: true, activeSceneId: true },
+      }),
+    ]);
+    if (!member) throw new NotFoundException('Jogador não é membro ativo desta sala.');
+    if (!assignment || assignment.sceneId === `initial-${roomId}` || assignment.activeSceneId) {
+      throw new ConflictException('Destino ou cena ativa mudou. Prepare a transferência novamente.');
+    }
+    const scene = await this.prisma.scene.findFirst({
+      where: { roomId, id: assignment.sceneId }, select: { id: true },
+    });
+    if (!scene || !this.gateway.verifiedSceneTransferPreflight(roomId, targetUserId, scene.id, requestId)) {
+      throw new ConflictException('A confirmação do jogador expirou, mudou ou não veio de cliente compatível.');
+    }
+    const playerTokenId = createHash('sha256').update(`${roomId}:${targetUserId}`).digest('hex');
+    await this.prisma.$transaction(async tx => {
+      const changed = await tx.roomSceneAssignment.updateMany({
+        where: { roomId, userId: targetUserId, sceneId: scene.id, activeSceneId: null },
+        data: { activeSceneId: scene.id },
+      });
+      if (changed.count !== 1) throw new ConflictException('A atribuição mudou durante a transferência.');
+      // A persistent player token is unique per user+room. Move it along with
+      // the active scene, or keep the user tokenless if none has been created.
+      await tx.token.updateMany({
+        where: { id: playerTokenId, roomId, OR: [{ sceneId: `initial-${roomId}` }, { sceneId: null }] },
+        data: { sceneId: scene.id },
+      });
+    });
+    this.gateway.finalizeSceneActivation(roomId, targetUserId, requestId, scene.id);
+    return { userId: targetUserId, sceneId: scene.id, activated: true, mode: 'handoff-required' };
+  }
+
+  /**
    * Emergency recovery for a future interrupted scene cutover.
    * Never uses the staged destination; only resets the activated scene.
    * A compare-and-set update keeps concurrent resets idempotent.
@@ -269,9 +326,19 @@ export class SceneController {
 
     // A nullable activeSceneId means the initial scene. Staging (sceneId)
     // is deliberately preserved to allow another preflight later.
-    const result = await this.prisma.roomSceneAssignment.updateMany({
-      where: { roomId, userId: targetUserId, activeSceneId: { not: null } },
-      data: { activeSceneId: null },
+    const playerTokenId = createHash('sha256').update(`${roomId}:${targetUserId}`).digest('hex');
+    const result = await this.prisma.$transaction(async tx => {
+      const changed = await tx.roomSceneAssignment.updateMany({
+        where: { roomId, userId: targetUserId, activeSceneId: { not: null } },
+        data: { activeSceneId: null },
+      });
+      // Recovery must also restore the persistent player token; otherwise
+      // the initial scene would remain empty after the active assignment reset.
+      await tx.token.updateMany({
+        where: { id: playerTokenId, roomId },
+        data: { sceneId: `initial-${roomId}` },
+      });
+      return changed;
     });
     // Also cancel pending preflight requests, even on an idempotent reset.
     this.gateway.recoverPlayerToInitial(roomId, targetUserId);

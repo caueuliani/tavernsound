@@ -23,7 +23,7 @@ describe('Scene storage and permissions', () => {
     access = { require: jest.fn(async () => room), requireOwner: jest.fn(async () => room),
       activeSceneForUser: jest.fn(async () => ({ room, sceneId: 'initial-ABC123', initialSceneId: 'initial-ABC123', isHost: false })) };
     prisma = {
-      token: { findMany: jest.fn().mockResolvedValue([]) },
+      token: { findMany: jest.fn().mockResolvedValue([]), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       room: { updateMany: jest.fn(async ({ data }) => { room = { ...room, ...data }; return { count: 1 }; }) },
       scene: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -39,10 +39,13 @@ describe('Scene storage and permissions', () => {
       },
       roomMember: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
     };
+    prisma.$transaction = jest.fn(async (callback: (tx: any) => Promise<any>) => callback(prisma));
     gateway = { publishScene: jest.fn(),
       requestSceneTransferPreflight: jest.fn().mockReturnValue({ requestId: 'c456c012-2b12-4c89-9e12-88442100f001', status: 'pending', expiresAt: Date.now() + 45_000 }),
       sceneTransferPreflightStatus: jest.fn().mockReturnValue({ requestId: 'c456c012-2b12-4c89-9e12-88442100f001', status: 'accepted' }),
-      recoverPlayerToInitial: jest.fn() };
+      recoverPlayerToInitial: jest.fn(),
+      verifiedSceneTransferPreflight: jest.fn().mockReturnValue(true),
+      finalizeSceneActivation: jest.fn() };
     controller = new SceneController(prisma, { require: jest.fn(async () => ({ id: 'user-1' })) } as any, access, gateway);
   });
   afterEach(async () => {
@@ -255,6 +258,89 @@ describe('Scene storage and permissions', () => {
     expect(prisma.roomSceneAssignment.updateMany).not.toHaveBeenCalled();
     expect(gateway.recoverPlayerToInitial).not.toHaveBeenCalled();
   });
+  it('keeps live activation disabled unless both coordinated rollout flags are explicitly enabled', async () => {
+    room.ownerId = 'user-1';
+    const oldLive = process.env.SCENE_LIVE_TRANSFERS;
+    const oldSocket = process.env.SCENE_SCOPED_ADMISSION;
+    try {
+      delete process.env.SCENE_LIVE_TRANSFERS;
+      process.env.SCENE_SCOPED_ADMISSION = 'true';
+      await expect(controller.activatePlayerScene('ABC123', 'player-1', req,
+        { requestId: 'c456c012-2b12-4c89-9e12-88442100f001' })).rejects.toThrow('não está habilitada');
+      process.env.SCENE_LIVE_TRANSFERS = 'true';
+      delete process.env.SCENE_SCOPED_ADMISSION;
+      await expect(controller.activatePlayerScene('ABC123', 'player-1', req,
+        { requestId: 'c456c012-2b12-4c89-9e12-88442100f001' })).rejects.toThrow('não está habilitada');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally {
+      if (oldLive === undefined) delete process.env.SCENE_LIVE_TRANSFERS;
+      else process.env.SCENE_LIVE_TRANSFERS = oldLive;
+      if (oldSocket === undefined) delete process.env.SCENE_SCOPED_ADMISSION;
+      else process.env.SCENE_SCOPED_ADMISSION = oldSocket;
+    }
+  });
+
+  it('commits activation and player token scene together only after GM and matching player ACK', async () => {
+    room.ownerId = 'user-1';
+    const oldLive = process.env.SCENE_LIVE_TRANSFERS;
+    const oldSocket = process.env.SCENE_SCOPED_ADMISSION;
+    try {
+      process.env.SCENE_LIVE_TRANSFERS = 'true';
+      process.env.SCENE_SCOPED_ADMISSION = 'true';
+      prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+      prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'beach-123', activeSceneId: null });
+      prisma.scene.findFirst.mockResolvedValue({ id: 'beach-123' });
+      const requestId = 'c456c012-2b12-4c89-9e12-88442100f001';
+      const data = await controller.activatePlayerScene('ABC123', 'player-1', req, { requestId });
+      expect(data).toMatchObject({ sceneId: 'beach-123', activated: true, mode: 'handoff-required' });
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.roomSceneAssignment.updateMany).toHaveBeenCalledWith({
+        where: { roomId: 'ABC123', userId: 'player-1', sceneId: 'beach-123', activeSceneId: null },
+        data: { activeSceneId: 'beach-123' },
+      });
+      const id = require('node:crypto').createHash('sha256').update('ABC123:player-1').digest('hex');
+      expect(prisma.token.updateMany).toHaveBeenCalledWith({
+        where: { id, roomId: 'ABC123', OR: [{ sceneId: 'initial-ABC123' }, { sceneId: null }] },
+        data: { sceneId: 'beach-123' },
+      });
+      expect(gateway.finalizeSceneActivation).toHaveBeenCalledWith('ABC123', 'player-1', requestId, 'beach-123');
+    } finally {
+      if (oldLive === undefined) delete process.env.SCENE_LIVE_TRANSFERS;
+      else process.env.SCENE_LIVE_TRANSFERS = oldLive;
+      if (oldSocket === undefined) delete process.env.SCENE_SCOPED_ADMISSION;
+      else process.env.SCENE_SCOPED_ADMISSION = oldSocket;
+    }
+  });
+
+  it('never mutates the DB without a valid socket-bound ACK or if activation conflicts', async () => {
+    room.ownerId = 'user-1';
+    const oldLive = process.env.SCENE_LIVE_TRANSFERS;
+    const oldSocket = process.env.SCENE_SCOPED_ADMISSION;
+    try {
+      process.env.SCENE_LIVE_TRANSFERS = 'true';
+      process.env.SCENE_SCOPED_ADMISSION = 'true';
+      prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+      prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'beach-123', activeSceneId: null });
+      prisma.scene.findFirst.mockResolvedValue({ id: 'beach-123' });
+      gateway.verifiedSceneTransferPreflight.mockReturnValue(false);
+      const reqId = 'c456c012-2b12-4c89-9e12-88442100f001';
+      await expect(controller.activatePlayerScene('ABC123', 'player-1', req, { requestId: reqId }))
+        .rejects.toThrow('confirmação do jogador');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      gateway.verifiedSceneTransferPreflight.mockReturnValue(true);
+      prisma.roomSceneAssignment.updateMany.mockResolvedValue({ count: 0 });
+      await expect(controller.activatePlayerScene('ABC123', 'player-1', req, { requestId: reqId }))
+        .rejects.toThrow('atribuição mudou');
+      expect(prisma.token.updateMany).not.toHaveBeenCalled();
+      expect(gateway.finalizeSceneActivation).not.toHaveBeenCalled();
+    } finally {
+      if (oldLive === undefined) delete process.env.SCENE_LIVE_TRANSFERS;
+      else process.env.SCENE_LIVE_TRANSFERS = oldLive;
+      if (oldSocket === undefined) delete process.env.SCENE_SCOPED_ADMISSION;
+      else process.env.SCENE_SCOPED_ADMISSION = oldSocket;
+    }
+  });
+
   it('keeps draft scenes isolated from the active VTT map', async () => {
     room.ownerId = 'user-1';
     const draft = { id: 'draft-1', roomId: 'ABC123', name: 'Praia', updatedAt: new Date(), sceneData: null, mapUrl: null };

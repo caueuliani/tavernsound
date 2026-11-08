@@ -211,6 +211,28 @@ describe('GameGateway regressions', () => {
     expect(client.disconnect).not.toHaveBeenCalled();
   });
 
+  it('verifies the accepted preflight came from the same connected V2 socket before activation', () => {
+    const { player } = prepareRoom();
+    (player as any).userId = 'player-1';
+    (player as any).sceneId = 'initial-ABC123';
+    (player as any).sceneTransportV2 = true;
+    client.connected = true;
+    const result = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    expect(gateway.verifiedSceneTransferPreflight('ABC123', 'player-1', 'beach-123', result.requestId!)).toBe(false);
+    gateway.handleSceneTransferPreflightResponse({ requestId: result.requestId, accepted: true }, client);
+    expect(gateway.verifiedSceneTransferPreflight('ABC123', 'player-1', 'beach-123', result.requestId!)).toBe(true);
+    expect(gateway.verifiedSceneTransferPreflight('ABC123', 'player-1', 'private-room', result.requestId!)).toBe(false);
+    (player as any).sceneTransportV2 = false;
+    expect(gateway.verifiedSceneTransferPreflight('ABC123', 'player-1', 'beach-123', result.requestId!)).toBe(false);
+    (player as any).sceneTransportV2 = true;
+    gateway.finalizeSceneActivation('ABC123', 'player-1', result.requestId!, 'beach-123');
+    expect(client.emit).toHaveBeenCalledWith('scene-activation-required', {
+      sceneId: 'beach-123', mode: 'reload-required',
+    });
+    expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toBeNull();
+    expect(gateway.verifiedSceneTransferPreflight('ABC123', 'player-1', 'beach-123', result.requestId!)).toBe(false);
+  });
+
   it('does not accept another voice identity supplied by the client', () => {
     const { player } = prepareRoom();
     client.data.session = { id: 'owner' };
