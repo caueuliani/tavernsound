@@ -300,6 +300,38 @@ describe('GameGateway regressions', () => {
     (gateway as any).clearPendingActivation('ABC123', 'player-1');
   });
 
+  it('moves cached tokens between initial and occupied alternative scenes without leaking positions', async () => {
+    const { room, player } = prepareRoom();
+    (player as any).sceneTransportV2 = true;
+    (player as any).sceneId = 'initial-ABC123';
+    (player as any).userId = 'player-1';
+    client.connected = true;
+    const id = createHash('sha256').update('ABC123:player-1').digest('hex');
+    room.tokens.push({ id, kind: 'PLAYER', sceneId: 'initial-ABC123', playerId: client.id, x: 4, y: 5 } as any);
+    (room as any).alternativeScenes = new Map([[
+      'beach-123', { tokens: [], walls: [], gridSize: 10 },
+    ]]);
+    const request = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    gateway.handleSceneTransferPreflightResponse({ requestId: request.requestId, accepted: true }, client);
+    gateway.finalizeSceneActivation('ABC123', 'player-1', request.requestId!, 'beach-123');
+    const dest = (room as any).alternativeScenes.get('beach-123');
+    expect(room.tokens).toEqual([]);
+    expect(dest.tokens).toEqual([expect.objectContaining({
+      id, sceneId: 'beach-123', playerId: id, x: 4, y: 5,
+    })]);
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'beach-123'));
+    prisma.token.findUnique.mockResolvedValue({
+      id, roomId: 'ABC123', sceneId: 'initial-ABC123',
+      kind: 'PLAYER', x: 4, y: 5, color: '#ffffff', name: 'Player', sizeMultiplier: 1,
+    });
+    gateway.recoverPlayerToInitial('ABC123', 'player-1');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(dest.tokens).toEqual([]);
+    expect(room.tokens).toEqual([expect.objectContaining({ id, sceneId: 'initial-ABC123' })]);
+    expect((gateway as any).pendingActivations.size).toBe(0);
+  });
+
   it('rolls back both the active scene and player token when media readiness is never confirmed', async () => {
     const { room, player } = prepareRoom();
     (player as any).sceneTransportV2 = true;
