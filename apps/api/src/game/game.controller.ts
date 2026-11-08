@@ -4,6 +4,7 @@ import { RtcTokenBuilder, RtcRole } from 'agora-access-token';
 import { SessionService } from '../auth/session.service';
 import { RoomAccessService } from './room-access.service';
 import { TestSafetyService } from '../safety/test-safety.service';
+import { sceneMediaChannel } from './scene-media.util';
 
 @Controller('agora')
 export class GameController {
@@ -14,9 +15,14 @@ export class GameController {
   async generateToken(
     @Query('channelName') channelName: string,
     @Req() req: Request,
+    @Query('sceneId') sceneId?: string,
   ) {
     const session = await this.sessions.require(req.headers.cookie);
-    await this.access.require(channelName, session.id);
+    if (sceneId !== undefined) {
+      await this.access.requireSceneMedia(channelName, session.id, sceneId);
+    } else {
+      await this.access.require(channelName, session.id);
+    }
     const appId = process.env.AGORA_APP_ID;
     const appCertificate = process.env.AGORA_APP_CERTIFICATE;
 
@@ -32,15 +38,16 @@ export class GameController {
     const currentTimestamp = Math.floor(Date.now() / 1000);
     const privilegeExpiredTs = Math.min(session.exp, currentTimestamp + expirationTimeInSeconds, testDeadline);
 
+    const rtcChannel = sceneId === undefined ? channelName : sceneMediaChannel(channelName, sceneId);
     const token = RtcTokenBuilder.buildTokenWithAccount(
       appId,
       appCertificate,
-      channelName,
+      rtcChannel,
       uid,
       role,
       privilegeExpiredTs,
     );
 
-    return { token, uid, expiresAt: privilegeExpiredTs };
+    return { token, uid, expiresAt: privilegeExpiredTs, channelName: rtcChannel };
   }
 }
