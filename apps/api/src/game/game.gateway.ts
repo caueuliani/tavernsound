@@ -272,6 +272,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
    */
   recoverPlayerToInitial(roomId: string, userId: string) {
     this.clearPendingActivation(roomId, userId);
+    const tokenId = createHash('sha256').update(`${roomId}:${userId}`).digest('hex');
+    const room = this.rooms.get(roomId);
+    if (Array.from(room?.alternativeScenes?.values() ?? []).some(scene => scene.tokens.some(token => token.id === tokenId))) {
+      this.publishTokenDeleted(roomId, tokenId);
+    }
     void this.restoreRecoveredPlayerToken(roomId, userId).catch(error => {
       console.error('Não foi possível atualizar o token recuperado na mesa:', error);
     });
@@ -308,6 +313,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     // The database moved the player's persistent token. Remove its stale
     // representation from the initial in-memory scene immediately.
     const playerTokenId = createHash('sha256').update(`${roomId}:${userId}`).digest('hex');
+    const room = this.rooms.get(roomId);
+    const formerToken = room?.tokens.find(token => token.id === playerTokenId);
+    const target = room?.alternativeScenes?.get(sceneId);
+    // If other players already occupy the destination scene, add the moved
+    // token to their live cache rather than making it appear only on next join.
+    if (formerToken && target && !target.tokens.some(token => token.id === playerTokenId)) {
+      const moved = { ...formerToken, sceneId, playerId: playerTokenId };
+      target.tokens.push(moved);
+      this.server.to(this.tokenTransport(roomId, moved)).emit('token-created', moved);
+    }
     this.publishTokenDeleted(roomId, playerTokenId);
     const timer = setTimeout(() => {
       void this.rollbackUnconfirmedActivation(roomId, userId, sceneId);
