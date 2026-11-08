@@ -49,6 +49,7 @@ interface PlayerData {
   name?: string;
   roomId?: string;
   sceneId?: string;
+  sceneTransportV2?: boolean;
   userId?: string;
   isHost?: boolean;
   audioPosition?: AudioPosition;
@@ -183,6 +184,27 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       });
       socket.disconnect(true);
     }
+  }
+
+  verifiedSceneTransferPreflight(roomId: string, userId: string, sceneId: string, requestId: string): boolean {
+    const request = this.transferPreflights.get(requestId);
+    if (!request || request.roomId !== roomId || request.userId !== userId ||
+        request.sceneId !== sceneId || request.status !== 'accepted' || request.expiresAt <= Date.now()) return false;
+    const player = this.players.get(request.socketId);
+    const socket = this.server?.sockets?.sockets?.get(request.socketId);
+    return !!socket?.connected && !!player?.sceneTransportV2 &&
+      player.roomId === roomId && player.userId === userId && player.sceneId === `initial-${roomId}`;
+  }
+
+  finalizeSceneActivation(roomId: string, userId: string, requestId: string, sceneId: string) {
+    const request = this.transferPreflights.get(requestId);
+    if (!request || request.roomId !== roomId || request.userId !== userId || request.sceneId !== sceneId) return;
+    this.transferPreflights.delete(requestId);
+    const socket = this.server?.sockets?.sockets?.get(request.socketId);
+    if (!socket?.connected) return;
+    // The browser handoff is deliberately a separate PR. Do not claim
+    // that a DB commit proves the map, Socket.IO and Agora already switched.
+    socket.emit('scene-activation-required', { sceneId, mode: 'reload-required' });
   }
 
   sceneTransferPreflightStatus(roomId: string, requestId: string) {
@@ -574,6 +596,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       name: playerName,
       roomId: data.roomId,
       sceneId: activeScene.sceneId,
+      sceneTransportV2: data.sceneTransportV2 === true,
       userId: session?.id,
       isHost,
       audioPosition: isHost ? undefined : { x: 0, y: 0, z: 0 },
