@@ -28,14 +28,30 @@ export class SceneController {
     return path.join(this.folder, file);
   }
   private async chosenScene(room: any, sceneId: string | undefined, userId: string, edit: boolean) {
-    if (!sceneId) return null; // Existing VTT and legacy editor always use Room.
+    if (edit) {
+      if (!sceneId) return null; // Legacy editor: initial scene stored on Room.
+      const stored = await this.prisma.scene.findFirst({ where: { id: sceneId, roomId: room.id } });
+      if (!stored) throw new NotFoundException('Cena não encontrada nesta sala.');
+      return stored;
+    }
+    if (room.ownerId === userId) {
+      if (!sceneId) return null;
+      const stored = await this.prisma.scene.findFirst({ where: { id: sceneId, roomId: room.id } });
+      if (!stored) throw new NotFoundException('Cena não encontrada nesta sala.');
+      return stored;
+    }
+    // Never use a staged destination for read permissions. Only the active
+    // scene is visible; legacy URLs are blocked once a player leaves it.
+    const active = await this.access.activeSceneForUser(room.id, userId);
+    if (!sceneId && active.sceneId !== active.initialSceneId) {
+      throw new ForbiddenException('Use a cena ativa para carregar o cenário.');
+    }
+    if (sceneId && sceneId !== active.sceneId) {
+      throw new ForbiddenException('Cena não disponível para este jogador.');
+    }
+    if (!sceneId) return null;
     const stored = await this.prisma.scene.findFirst({ where: { id: sceneId, roomId: room.id } });
     if (!stored) throw new NotFoundException('Cena não encontrada nesta sala.');
-    if (!edit && room.ownerId !== userId) {
-      // Staged assignments are GM-only preparation; never reveal draft scenes to players.
-      const first = await this.prisma.scene.findFirst({ where: { roomId: room.id }, orderBy: { position: 'asc' } });
-      if (sceneId !== first?.id) throw new ForbiddenException('Cena não disponível para este jogador.');
-    }
     return stored;
   }
   private initialScene(room: any, stored: any) {
@@ -77,8 +93,9 @@ export class SceneController {
       select: { id: true, name: true, position: true },
     });
     if (isHost) return { scenes, currentSceneId: scenes[0]?.id ?? null, isHost };
-    // Until live cutover, only the initial scene is visible to players.
-    const visible = scenes[0];
+    // Only the activated scene, never the GM's planned destination.
+    const active = await this.access.activeSceneForUser(roomId, user.id);
+    const visible = scenes.find(scene => scene.id === active.sceneId);
     return { scenes: visible ? [visible] : [], currentSceneId: visible?.id ?? null, isHost };
   }
 
@@ -176,6 +193,44 @@ export class SceneController {
       update: { sceneId },
     });
     return { userId: targetUserId, sceneId: assignment.sceneId, mode: 'staging' };
+  }
+
+  /**
+   * Read-only data plane for future scene transfers. Returning a snapshot
+   * does NOT activate a scene, join a Socket.IO room or move Agora media.
+   */
+  @Get('snapshot')
+  async snapshot(@Param('roomId') roomId: string, @Query('sceneId') sceneId: string | undefined, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.require(roomId, user.id);
+    const stored = await this.chosenScene(room, sceneId, user.id, false);
+    const isInitial = !stored || this.initialScene(room, stored);
+    const targetId = stored?.id ?? `initial-${roomId}`;
+    const data = readScene(isInitial ? room.sceneData : stored.sceneData);
+    const [tokens] = await Promise.all([
+      this.prisma.token.findMany({
+        where: {
+          roomId,
+          ...(isInitial ? { OR: [{ sceneId: targetId }, { sceneId: null }] } : { sceneId: targetId }),
+        },
+        select: { id: true, kind: true, sceneId: true, name: true, x: true, y: true,
+          positionX: true, positionY: true, color: true, imageUrl: true,
+          sizeMultiplier: true, hp: true, maxHp: true },
+      }),
+    ]);
+    res.setHeader('Cache-Control', 'private, no-store');
+    return {
+      roomId, sceneId: targetId, active: false, // Snapshot does not trigger transfer.
+      scene: publicScene(roomId, data, isInitial ? undefined : targetId),
+      fogData: isInitial ? (Array.isArray(room.fogOfWarData) ? room.fogOfWarData : null) :
+        (Array.isArray(stored.fogData) ? stored.fogData : null),
+      tokens: tokens.map(token => ({
+        id: token.id, kind: token.kind, sceneId: token.sceneId ?? targetId,
+        x: token.positionX ?? token.x, y: token.positionY ?? token.y,
+        color: token.color, playerName: token.name, imageUrl: token.imageUrl,
+        size: token.sizeMultiplier, hp: token.hp, maxHp: token.maxHp,
+      })),
+    };
   }
 
   @Get()
