@@ -89,6 +89,25 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
     } catch (error) { setError((error as Error).message) }
     finally { setBusy(false) }
   }
+  const activatePreparedScene = async (userId: string) => {
+    const requestId = preflight[userId]?.requestId
+    if (busy || preflight[userId]?.status !== 'accepted' || !requestId ||
+        !window.confirm('Ativar a cena deste jogador? O navegador dele recarregará e a webcam será desligada.')) return
+    setBusy(true); setError('')
+    try {
+      const response = await fetch(apiUrl(`/rooms/${roomId}/scene/transfers/${encodeURIComponent(userId)}/activate`), {
+        method: 'POST', credentials: 'include', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Não foi possível ativar a transferência.')
+      setPlayers(previous => previous.map(player => player.userId === userId
+        ? { ...player, activeSceneId: data.sceneId } : player))
+      setPreflight(previous => { const next = { ...previous }; delete next[userId]; return next })
+    } catch (error) { setError((error as Error).message) }
+    finally { setBusy(false) }
+  }
+
   const createScene = async () => {
     const name = prompt('Nome da nova cena (até 80 caracteres):')?.trim()
     if (!name || busy) return
@@ -140,7 +159,7 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
       </nav>}
       {host && allowed && <section aria-label="Preparar destinos dos jogadores" style={{ marginBottom: 20, padding: 14, border: '1px solid #79552c', borderRadius: 8 }}>
         <h2 style={{ marginTop: 0, fontSize: 18 }}>🎭 Destinos dos personagens (preparação)</h2>
-        <p style={{ fontSize: 13 }}>Defina para qual cena cada jogador deverá ir. <strong>Esta escolha ainda não move o personagem nem altera voz ou mapa da mesa. O botão de verificação só solicita confirmação da conexão, sem teleporte. Se uma transferência futura falhar, o mestre poderá restaurar o jogador à Cena inicial.</strong></p>
+        <p style={{ fontSize: 13 }}>Defina para qual cena cada jogador deverá ir. <strong>Esta escolha ainda não move o personagem nem altera voz ou mapa da mesa. O botão de verificação só solicita confirmação da conexão, sem teleporte. A ativação experimental só aparece em versões preparadas para áudio por cena e depende de autorização do servidor. Se a transferência falhar, o mestre poderá restaurar o jogador à Cena inicial.</strong></p>
         {assignmentsLoading && <p>Carregando jogadores…</p>}
         {!assignmentsLoading && players.length === 0 && <p>Nenhum jogador cadastrado como membro ativo desta sala.</p>}
         {players.map(player => <div key={player.userId} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -157,6 +176,13 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
             {preflight[player.userId]?.status === 'pending' || preflight[player.userId]?.status === 'accepted'
               ? 'Consultar confirmação' : 'Verificar conexão'}
           </button>
+          {process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF === 'true' &&
+            preflight[player.userId]?.status === 'accepted' &&
+            (!player.activeSceneId || player.activeSceneId === `initial-${roomId}`) &&
+            <button type="button" disabled={busy}
+              onClick={() => void activatePreparedScene(player.userId)}>
+              Ativar transferência (experimental)
+            </button>}
           {player.activeSceneId && player.activeSceneId !== `initial-${roomId}` && <button
             type="button" disabled={busy} onClick={() => void recoverToInitial(player.userId)}>
             Restaurar Cena inicial
