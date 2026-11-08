@@ -32,11 +32,9 @@ export class SceneController {
     const stored = await this.prisma.scene.findFirst({ where: { id: sceneId, roomId: room.id } });
     if (!stored) throw new NotFoundException('Cena não encontrada nesta sala.');
     if (!edit && room.ownerId !== userId) {
-      const assigned = await this.prisma.roomSceneAssignment.findUnique({
-        where: { roomId_userId: { roomId: room.id, userId } },
-      });
+      // Staged assignments are GM-only preparation; never reveal draft scenes to players.
       const first = await this.prisma.scene.findFirst({ where: { roomId: room.id }, orderBy: { position: 'asc' } });
-      if (sceneId !== (assigned?.sceneId ?? first?.id)) throw new ForbiddenException('Cena não disponível para este jogador.');
+      if (sceneId !== first?.id) throw new ForbiddenException('Cena não disponível para este jogador.');
     }
     return stored;
   }
@@ -79,10 +77,8 @@ export class SceneController {
       select: { id: true, name: true, position: true },
     });
     if (isHost) return { scenes, currentSceneId: scenes[0]?.id ?? null, isHost };
-    const assignment = await this.prisma.roomSceneAssignment.findUnique({
-      where: { roomId_userId: { roomId, userId: user.id } },
-    });
-    const visible = scenes.find(scene => scene.id === assignment?.sceneId) ?? scenes[0];
+    // Until live cutover, only the initial scene is visible to players.
+    const visible = scenes[0];
     return { scenes: visible ? [visible] : [], currentSceneId: visible?.id ?? null, isHost };
   }
 
@@ -112,6 +108,74 @@ export class SceneController {
     const result = await this.prisma.scene.updateMany({ where: { roomId, id: sceneId }, data: { name } });
     if (!result.count) throw new NotFoundException('Cena não encontrada.');
     return { id: sceneId, name };
+  }
+
+  // Staging only. This assignment deliberately does not change the active
+  // canvas, Socket.IO room, tokens, fog, or Agora channel. A later cutover
+  // will apply scene assignments atomically to the live VTT.
+  @Get('assignments')
+  async assignments(@Param('roomId') roomId: string, @Req() req: Request) {
+    const user = await this.sessions.require(req.headers.cookie);
+    await this.access.requireOwner(roomId, user.id);
+    const [members, assignments, scenes] = await Promise.all([
+      this.prisma.roomMember.findMany({
+        where: { roomId, leftAt: null, userId: { not: null } },
+        select: { userId: true, nickname: true },
+      }),
+      this.prisma.roomSceneAssignment.findMany({
+        where: { roomId }, select: { userId: true, sceneId: true },
+      }),
+      this.prisma.scene.findMany({
+        where: { roomId }, orderBy: { position: 'asc' },
+        select: { id: true, name: true, position: true },
+      }),
+    ]);
+    const assigned = new Map(assignments.map(item => [item.userId, item.sceneId]));
+    const seen = new Set<string>();
+    return {
+      scenes,
+      players: members.filter(member => {
+        if (!member.userId || seen.has(member.userId)) return false;
+        seen.add(member.userId);
+        return true;
+      }).map(member => ({
+        userId: member.userId!,
+        nickname: member.nickname,
+        sceneId: assigned.get(member.userId!) ?? scenes[0]?.id ?? null,
+      })),
+      mode: 'staging',
+    };
+  }
+
+  @Put('assignments/:userId')
+  async stagePlayerScene(
+    @Param('roomId') roomId: string,
+    @Param('userId') targetUserId: string,
+    @Req() req: Request,
+    @Body() body: { sceneId?: unknown },
+  ) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.requireOwner(roomId, user.id);
+    if (targetUserId === room.ownerId) throw new BadRequestException('O mestre não recebe atribuição de jogador.');
+    const sceneId = typeof body?.sceneId === 'string' ? body.sceneId : '';
+    if (!sceneId || sceneId.length > 120) throw new BadRequestException('Selecione uma cena válida.');
+    const [member, scene] = await Promise.all([
+      this.prisma.roomMember.findFirst({
+        where: { roomId, userId: targetUserId, leftAt: null },
+        select: { id: true },
+      }),
+      this.prisma.scene.findFirst({
+        where: { roomId, id: sceneId }, select: { id: true },
+      }),
+    ]);
+    if (!member) throw new NotFoundException('Jogador não é membro ativo desta sala.');
+    if (!scene) throw new NotFoundException('Cena não pertence a esta sala.');
+    const assignment = await this.prisma.roomSceneAssignment.upsert({
+      where: { roomId_userId: { roomId, userId: targetUserId } },
+      create: { roomId, userId: targetUserId, sceneId },
+      update: { sceneId },
+    });
+    return { userId: targetUserId, sceneId: assignment.sceneId, mode: 'staging' };
   }
 
   @Get()

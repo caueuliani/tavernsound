@@ -13,6 +13,8 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
   const [scenes, setScenes] = useState<{ id: string; name: string; position: number }[]>([])
   const [sceneId, setSceneId] = useState('')
   const [busy, setBusy] = useState(false)
+  const [players, setPlayers] = useState<{ userId: string; nickname: string; sceneId: string | null }[]>([])
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false)
   useEffect(() => {
     let disposed = false
     fetch(apiUrl(`/rooms/${roomId}/scene/list`), { credentials: 'include', cache: 'no-store' }).then(async response => {
@@ -22,6 +24,34 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
     }).catch(e => { if (!disposed) setError(e.message) })
     return () => { disposed = true }
   }, [roomId])
+  useEffect(() => {
+    if (!allowed || !host) return
+    let cancelled = false
+    setAssignmentsLoading(true)
+    fetch(apiUrl(`/rooms/${roomId}/scene/assignments`), { credentials: 'include', cache: 'no-store' })
+      .then(async response => {
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.message || 'Não foi possível consultar jogadores.')
+        if (!cancelled) setPlayers(data.players || [])
+      }).catch(error => { if (!cancelled) setError((error as Error).message) })
+      .finally(() => { if (!cancelled) setAssignmentsLoading(false) })
+    return () => { cancelled = true }
+  }, [roomId, allowed, host])
+  const stageAssignment = async (userId: string, nextSceneId: string) => {
+    if (busy) return
+    setBusy(true); setError('')
+    try {
+      const response = await fetch(apiUrl(`/rooms/${roomId}/scene/assignments/${encodeURIComponent(userId)}`), {
+        method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sceneId: nextSceneId }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Não foi possível preparar o destino do jogador.')
+      setPlayers(previous => previous.map(player => player.userId === userId
+        ? { ...player, sceneId: data.sceneId } : player))
+    } catch (error) { setError((error as Error).message) }
+    finally { setBusy(false) }
+  }
   const createScene = async () => {
     const name = prompt('Nome da nova cena (até 80 caracteres):')?.trim()
     if (!name || busy) return
@@ -71,6 +101,20 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
         {host && <><button disabled={busy || scenes.length >= 20} type="button" onClick={() => void createScene()}>+ Nova cena</button>
           <button disabled={busy || !sceneId} type="button" onClick={() => void renameScene()}>Renomear</button></>}
       </nav>}
+      {host && allowed && <section aria-label="Preparar destinos dos jogadores" style={{ marginBottom: 20, padding: 14, border: '1px solid #79552c', borderRadius: 8 }}>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>🎭 Destinos dos personagens (preparação)</h2>
+        <p style={{ fontSize: 13 }}>Defina para qual cena cada jogador deverá ir. <strong>Esta escolha ainda não move o personagem nem altera voz ou mapa da mesa.</strong></p>
+        {assignmentsLoading && <p>Carregando jogadores…</p>}
+        {!assignmentsLoading && players.length === 0 && <p>Nenhum jogador cadastrado como membro ativo desta sala.</p>}
+        {players.map(player => <label key={player.userId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+          <span>{player.nickname || 'Jogador'}</span>
+          <select value={player.sceneId ?? ''} disabled={busy || scenes.length === 0}
+            onChange={event => void stageAssignment(player.userId, event.target.value)}
+            style={{ padding: 6, background: '#332319', color: '#f4e4bc', border: '1px solid #85613b' }}>
+            {scenes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        </label>)}
+      </section>}
       {error && <p role="alert">{error} <a href="/login" style={{ color: '#ffc568' }}>Entrar</a></p>}
       {!allowed && !error && <p>Carregando cenário…</p>}
       {allowed && sceneId && <SceneEditor key={sceneId} roomId={roomId} sceneId={sceneId} socket={null} connected={true} isHost={host} onChange={setScene}>
