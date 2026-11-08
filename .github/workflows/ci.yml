@@ -46,5 +46,7 @@ jobs:
         run: npm test --workspace=api -- --runInBand
       - name: Proxy tests
         run: npm run test:proxy
+      - name: Scene RTC credential tests
+        run: node --experimental-strip-types --test apps/web/app/lib/scene-rtc.test.ts
       - name: API and web builds
         run: npm run build
