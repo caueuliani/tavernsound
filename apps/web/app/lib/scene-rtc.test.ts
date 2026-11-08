@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readRtcCredentials, rtcTokenPath } from './scene-rtc.ts'
+import { joinAfterLeave, readRtcCredentials, rtcTokenPath, stopMediaCapture } from './scene-rtc.ts'
 
 test('legacy voice requests use only the room and accept only that channel', () => {
   assert.equal(rtcTokenPath('ABC123'), '/agora/token?channelName=ABC123')
@@ -29,4 +29,29 @@ test('invalid or incomplete credentials fail before Agora join', () => {
     { token: 'signed', uid: 7, channelName: 'ABC123' }]) {
     assert.throws(() => readRtcCredentials(input, 'ABC123'))
   }
+})
+
+test('stops video and microphone synchronously even if one close throws', () => {
+  const stopped: string[] = []
+  stopMediaCapture(
+    { close() { stopped.push('microphone') } },
+    { close() { stopped.push('camera'); throw new Error('device already disconnected') } },
+  )
+  assert.deepEqual(stopped, ['camera', 'microphone'])
+})
+
+test('never joins the replacement scene before the old channel leaves', async () => {
+  let completeLeave!: () => void
+  const pendingLeave = new Promise<void>(resolve => { completeLeave = resolve })
+  const calls: string[] = []
+  const joining = joinAfterLeave(pendingLeave, async () => {
+    calls.push('join-new')
+    return 'new-uid'
+  })
+  await Promise.resolve()
+  assert.deepEqual(calls, [])
+  calls.push('leave-old')
+  completeLeave()
+  assert.equal(await joining, 'new-uid')
+  assert.deepEqual(calls, ['leave-old', 'join-new'])
 })
