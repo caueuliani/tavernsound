@@ -48,5 +48,7 @@ jobs:
         run: npm run test:proxy
       - name: Scene RTC credential tests
         run: node --experimental-strip-types --test apps/web/app/lib/scene-rtc.test.ts
+      - name: Scene snapshot isolation tests
+        run: node --experimental-strip-types --test apps/web/app/lib/scene-snapshot.test.ts
       - name: API and web builds
         run: npm run build
