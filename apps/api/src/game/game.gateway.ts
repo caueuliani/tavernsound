@@ -763,7 +763,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!player || !player.roomId) return;
     // Alternative scene gameplay mutation requires the per-scene rules engine.
     // Until then, entry is read-only to avoid writing to initial-scene tokens.
-    if (player.sceneId !== `initial-${player.roomId}`) {
+    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
       client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
       return;
     }
@@ -833,7 +833,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!player || !player.roomId) return;
     // Alternative token editing will be enabled only after scene-aware
     // ownership, persistence and movement validation are fully coordinated.
-    if (player.sceneId !== `initial-${player.roomId}`) {
+    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
       client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
       return;
     }
@@ -988,7 +988,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!player || !player.roomId) return;
     // Alternative token editing will be enabled only after scene-aware
     // ownership, persistence and movement validation are fully coordinated.
-    if (player.sceneId !== `initial-${player.roomId}`) {
+    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
       client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
       return;
     }
