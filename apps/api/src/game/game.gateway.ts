@@ -1100,12 +1100,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player?.roomId) return;
-    // DiceRoll rows currently lack sceneId. Persisting dice from another
-    // scene would leak their results to legacy initial-scene history.
-    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
-      client.emit('room-error', { message: 'Rolagens nesta cena estarão disponíveis após o histórico por cenário.' });
-      return;
-    }
     const request = parseDiceRequest(data);
     if (!request) {
       client.emit('room-error', { message: 'Rolagem inválida. Escolha entre 1 e 30 dados e um modificador de -1000 a 1000.' });
@@ -1122,6 +1116,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       modifier: rolled.modifier,
       timestamp: Date.now(),
     };
+    // DiceRoll rows have no sceneId yet. Alternative rolls are visible live
+    // only to that scene, never stored in the global initial-scene history.
+    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
+      this.server.to(this.playerTransport(player)).emit('dice-rolled', rollData);
+      return;
+    }
     try {
       await this.prisma.diceRoll.create({
         data: {
