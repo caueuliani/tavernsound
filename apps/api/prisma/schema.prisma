@@ -225,7 +225,8 @@ model Scene {
   mapUrl String?
   fogData Json?
   tokens Token[]
-  assignments RoomSceneAssignment[]
+  assignments RoomSceneAssignment[] @relation("PlannedSceneAssignments")
+  activeAssignments RoomSceneAssignment[] @relation("ActivatedSceneAssignments")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -237,12 +238,15 @@ model RoomSceneAssignment {
   roomId String
   userId String
   sceneId String
+  activeSceneId String?
   room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  scene Scene @relation("PlannedSceneAssignments", fields: [sceneId], references: [id], onDelete: Cascade)
+  activeScene Scene? @relation("ActivatedSceneAssignments", fields: [activeSceneId], references: [id], onDelete: SetNull)
 
   @@id([roomId, userId])
   @@index([sceneId])
+  @@index([activeSceneId])
 }
 
 // ====================================
