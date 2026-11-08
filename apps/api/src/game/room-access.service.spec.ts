@@ -40,6 +40,7 @@ describe('Room permissions', () => {
     prisma.roomMember.findFirst.mockResolvedValue({ id: 'membership' });
     await expect(access.requireSceneMedia('ABC123', 'member', 'secret-scene'))
       .rejects.toThrow('ainda não está ativo');
+    prisma.roomMember.findFirst.mockResolvedValue(null);
     await expect(access.requireSceneMedia('ABC123', 'stranger', 'initial-ABC123'))
       .rejects.toThrow('Peça ao mestre');
   });
