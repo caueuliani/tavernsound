@@ -17,6 +17,7 @@ Permitir ao backend preparar a admissão de um jogador cuja cena **ativa** já e
 - O cliente opt-in já possui carregamento do mapa via `/scene/snapshot` (#34).
 - Ambientação inicial é `off`; histórico de rolagens legadas é **omitido**, porque não está associado a cenas no banco.
 - Histórico de chat é filtrado por metadados de cena; mensagens sem sceneId pertencem à Cena inicial.
+- Rolagens em cenas alternativas ficam **desabilitadas** até que a persistência de resultados tenha vínculo com cena: do contrário, o histórico global da Cena inicial revelaria seus resultados.
 - Lista de participantes só inclui pessoas na mesma cena; eventos e UIDs de voz continuam restritos ao grupo de cena.
 - Presença, chat e áudio podem operar apenas dentro da cena autorizada. Criação, movimentação e HP dos tokens em cenas alternativas permanecem **somente leitura** até termos migração de posse, geometria e rollback; não são executados com o modelo da Cena inicial.
 
