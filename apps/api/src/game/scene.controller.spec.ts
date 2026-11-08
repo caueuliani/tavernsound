@@ -20,8 +20,10 @@ describe('Scene storage and permissions', () => {
     folder = await mkdtemp(path.join(tmpdir(), 'tavern-scene-test-'));
     process.env.LOCAL_UPLOAD_DIR = folder; process.env.LOCAL_MAP_UPLOADS = 'true';
     room = { id: 'ABC123', updatedAt: new Date(), sceneData: null };
-    access = { require: jest.fn(async () => room), requireOwner: jest.fn(async () => room) };
+    access = { require: jest.fn(async () => room), requireOwner: jest.fn(async () => room),
+      activeSceneForUser: jest.fn(async () => ({ room, sceneId: 'initial-ABC123', initialSceneId: 'initial-ABC123', isHost: false })) };
     prisma = {
+      token: { findMany: jest.fn().mockResolvedValue([]) },
       room: { updateMany: jest.fn(async ({ data }) => { room = { ...room, ...data }; return { count: 1 }; }) },
       scene: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -122,6 +124,67 @@ describe('Scene storage and permissions', () => {
     await expect(controller.stagePlayerScene('ABC123', 'player-1', req, { sceneId: 'draft-beach' }))
       .rejects.toThrow('Somente mestre');
     expect(prisma.roomSceneAssignment.upsert).not.toHaveBeenCalled();
+  });
+  it('returns the initial scene snapshot with token and fog data restricted to the scene', async () => {
+    room.ownerId = 'user-1';
+    room.fogOfWarData = [true, false];
+    room.sceneData = emptyScene();
+    prisma.token.findMany.mockResolvedValue([
+      { id: 'token-1', kind: 'PLAYER', sceneId: 'initial-ABC123', name: 'Hero',
+        x: 2, y: 3, positionX: 2.5, positionY: 3.5, color: '#ff9000',
+        imageUrl: null, sizeMultiplier: 1, hp: 10, maxHp: 10 },
+    ]);
+    const res = { setHeader: jest.fn() } as any;
+    const data = await controller.snapshot('ABC123', undefined, req, res);
+    expect(data).toMatchObject({
+      roomId: 'ABC123', sceneId: 'initial-ABC123', active: false,
+      fogData: [true, false],
+      tokens: [{ id: 'token-1', x: 2.5, y: 3.5, sceneId: 'initial-ABC123' }],
+    });
+    expect(prisma.token.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { roomId: 'ABC123', OR: [{ sceneId: 'initial-ABC123' }, { sceneId: null }] },
+    }));
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+  });
+  it('isolates a draft snapshot to tokens, fog and map data of that one scene', async () => {
+    room.ownerId = 'user-1';
+    const draft = { id: 'beach-123', roomId: 'ABC123', sceneData: { ...emptyScene(), revision: 4 },
+      fogData: [false, true], mapUrl: null };
+    prisma.scene.findFirst.mockResolvedValue(draft);
+    const data = await controller.snapshot('ABC123', 'beach-123', req, { setHeader: jest.fn() } as any);
+    expect(data).toMatchObject({
+      sceneId: 'beach-123', fogData: [false, true], scene: { revision: 4 },
+    });
+    expect(prisma.token.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { roomId: 'ABC123', sceneId: 'beach-123' },
+    }));
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+    expect(gateway.publishScene).not.toHaveBeenCalled();
+  });
+  it('does not reveal a staged draft, nor a legacy map, to a player active elsewhere', async () => {
+    room.ownerId = 'different-owner';
+    prisma.scene.findFirst.mockResolvedValue({ id: 'beach-123', roomId: 'ABC123', sceneData: null });
+    access.activeSceneForUser.mockResolvedValue({
+      room, sceneId: 'initial-ABC123', initialSceneId: 'initial-ABC123', isHost: false,
+    });
+    const res = { setHeader: jest.fn() } as any;
+    await expect(controller.snapshot('ABC123', 'beach-123', req, res))
+      .rejects.toThrow('Cena não disponível');
+    expect(prisma.token.findMany).not.toHaveBeenCalled();
+
+    access.activeSceneForUser.mockResolvedValue({
+      room, sceneId: 'beach-123', initialSceneId: 'initial-ABC123', isHost: false,
+    });
+    await expect(controller.snapshot('ABC123', undefined, req, res))
+      .rejects.toThrow('Use a cena ativa');
+    await expect(controller.get('ABC123', undefined, req, res)).rejects.toThrow('Use a cena ativa');
+    await expect(controller.image('ABC123', undefined, req, { set: jest.fn() } as any))
+      .rejects.toThrow('Use a cena ativa');
+    const permitted = await controller.snapshot('ABC123', 'beach-123', req, res);
+    expect(permitted.sceneId).toBe('beach-123');
+    expect(prisma.token.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { roomId: 'ABC123', sceneId: 'beach-123' },
+    }));
   });
   it('keeps draft scenes isolated from the active VTT map', async () => {
     room.ownerId = 'user-1';
