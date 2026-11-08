@@ -327,7 +327,10 @@ export default function Grid({ roomId }: GridProps) {
 
     socket.on('connect', () => {
       setRoomError('')
-      socket.emit('join-room', { roomId })
+      socket.emit('join-room', {
+        roomId,
+        sceneTransportV2: process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF === 'true',
+      })
     })
 
     socket.on('scene-transfer-preflight', (data: { requestId?: string; sceneId?: string; expiresAt?: number }) => {

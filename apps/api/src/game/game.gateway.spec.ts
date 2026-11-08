@@ -15,8 +15,9 @@ describe('GameGateway regressions', () => {
     prisma = {
       subscription: { findUnique: jest.fn().mockResolvedValue(null) },
       room: { count: jest.fn().mockResolvedValue(0), create: jest.fn().mockResolvedValue({}), findUnique: jest.fn(), update: jest.fn().mockResolvedValue({}) },
-      token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}) },
-      diceRoll: { findMany: jest.fn().mockResolvedValue([]) },
+      token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}), findMany: jest.fn().mockResolvedValue([]) },
+      scene: { findFirst: jest.fn().mockResolvedValue(null) },
+      diceRoll: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn().mockResolvedValue({}) },
       event: { findMany: jest.fn().mockResolvedValue([]) },
     };
     sessions = { require: jest.fn(), on: jest.fn(), voiceUid: jest.fn().mockReturnValue('allowed-uid') };
@@ -49,6 +50,100 @@ describe('GameGateway regressions', () => {
     expect(client.join).not.toHaveBeenCalled();
     expect(prisma.room.findUnique).not.toHaveBeenCalled();
     expect((gateway as any).players.size).toBe(0);
+  });
+
+  it('keeps alternative admission disabled for legacy or uncoordinated clients', async () => {
+    const old = process.env.SCENE_SCOPED_ADMISSION;
+    try {
+      client.data.session = { id: 'player', sid: 'session', name: 'Player' };
+      access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
+      process.env.SCENE_SCOPED_ADMISSION = 'true';
+      await gateway.handleJoinRoom({ roomId: 'ABC123' }, client);
+      expect(client.join).not.toHaveBeenCalled();
+      process.env.SCENE_SCOPED_ADMISSION = 'false';
+      await gateway.handleJoinRoom({ roomId: 'ABC123', sceneTransportV2: true }, client);
+      expect(client.join).not.toHaveBeenCalled();
+      expect(prisma.scene.findFirst).not.toHaveBeenCalled();
+      expect(prisma.token.findMany).not.toHaveBeenCalled();
+    } finally {
+      if (old === undefined) delete process.env.SCENE_SCOPED_ADMISSION;
+      else process.env.SCENE_SCOPED_ADMISSION = old;
+    }
+  });
+
+  it('admits an authorized alternative scene with only its map geometry, tokens and fog', async () => {
+    const old = process.env.SCENE_SCOPED_ADMISSION;
+    try {
+      process.env.SCENE_SCOPED_ADMISSION = 'true';
+      client.data.session = { id: 'player', sid: 'session', name: 'Player' };
+      access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
+      const initialToken = {
+        id: 'initial-npc', kind: 'SCENERY', sceneId: 'initial-ABC123',
+        x: 1, y: 1, playerId: 'initial-npc', color: 0xff0000, playerName: 'Initial secret',
+      };
+      const room = {
+        id: 'ABC123', name: 'Table', ownerId: null, createdAt: new Date(),
+        players: new Map(), tokens: [initialToken],
+        fogData: [true, true], mapUrl: '/initial-secret.webp',
+        walls: [{ id: 'initial-secret-wall' }], gridSize: 10, ambientPreset: 'combat',
+      };
+      (gateway as any).rooms.set('ABC123', room);
+      prisma.scene.findFirst.mockResolvedValue({
+        id: 'beach-123', sceneData: { revision: 1, map: null,
+          settings: { scale: 1, x: 0, y: 0, gridOpacity: .3, gridSize: 10 },
+          walls: [{ id: 'beach-wall', x1: 1, y1: 1, x2: 2, y2: 2, isDoor: false, isOpen: false, blocksAudio: true }] },
+        fogData: [false, false],
+      });
+      prisma.token.findMany.mockResolvedValue([{
+        id: 'beach-npc', kind: 'SCENERY', sceneId: 'beach-123', x: 2, y: 3,
+        positionX: 2.5, positionY: 3.25, color: '#00ff00', name: 'Beach NPC',
+      }]);
+      await gateway.handleJoinRoom({ roomId: 'ABC123', sceneTransportV2: true }, client);
+      const joined = client.emit.mock.calls.find(([event]: [string]) => event === 'room-joined')?.[1];
+      expect(joined).toMatchObject({
+        sceneId: 'beach-123', fogData: [false, false], mapUrl: null,
+        ambientPreset: 'off', recentRolls: [],
+        walls: [{ id: 'beach-wall' }],
+        tokens: [{ id: 'beach-npc', sceneId: 'beach-123', x: 2.5, y: 3.25 }],
+      });
+      expect(JSON.stringify(joined)).not.toContain('initial-secret');
+      expect(client.join).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'beach-123'));
+      expect(client.join).not.toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
+      expect(prisma.token.findMany).toHaveBeenCalledWith({ where: { roomId: 'ABC123', sceneId: 'beach-123' } });
+      expect(client.emit).toHaveBeenCalledWith('scene-transport-ready',
+        { sceneId: 'beach-123', isolated: false, socketScoped: true });
+      gateway.handleMoveToken({ tokenId: 'beach-npc', x: 4, y: 4 }, client);
+      gateway.handleUpdateTokenHp({ tokenId: 'beach-npc', hp: 1, maxHp: 10 }, client);
+      await gateway.handleCreateToken({ tokenId: 'beach-new', x: 1, y: 1, color: 0 }, client);
+      await gateway.handleRollDice({ quantity: 1, sides: 20, modifier: 0 }, client);
+      expect(prisma.diceRoll.findMany).toHaveBeenCalled();
+      expect(prisma.diceRoll.create).not.toHaveBeenCalled();
+      expect(prisma.token.create).not.toHaveBeenCalled();
+      expect(prisma.token.update).not.toHaveBeenCalled();
+    } finally {
+      if (old === undefined) delete process.env.SCENE_SCOPED_ADMISSION;
+      else process.env.SCENE_SCOPED_ADMISSION = old;
+    }
+  });
+
+  it('fails closed if the activated destination is missing from this room', async () => {
+    const old = process.env.SCENE_SCOPED_ADMISSION;
+    try {
+      process.env.SCENE_SCOPED_ADMISSION = 'true';
+      client.data.session = { id: 'player', sid: 'session', name: 'Player' };
+      access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
+      (gateway as any).rooms.set('ABC123', {
+        id: 'ABC123', name: 'Table', ownerId: null, players: new Map(), tokens: [],
+      });
+      await gateway.handleJoinRoom({ roomId: 'ABC123', sceneTransportV2: true }, client);
+      expect(client.join).not.toHaveBeenCalled();
+      expect(prisma.token.findMany).not.toHaveBeenCalled();
+      expect(client.emit).toHaveBeenCalledWith('room-error',
+        expect.objectContaining({ message: expect.stringContaining('Cena ativa indisponível') }));
+    } finally {
+      if (old === undefined) delete process.env.SCENE_SCOPED_ADMISSION;
+      else process.env.SCENE_SCOPED_ADMISSION = old;
+    }
   });
 
   it('requires a connected, scene-authorized player for preflight and binds acknowledgement to that socket', () => {
