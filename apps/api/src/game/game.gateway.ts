@@ -445,8 +445,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
         // Remove tokens da memória, mas NÃO do banco — o estado do mapa persiste
         const tokenIds = player.tokens.map(t => t.id);
-        room.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
-        client.to(this.initialTransport(player.roomId)).emit('remove-player-tokens', {
+        const active = this.sceneState(room, player.sceneId);
+        active?.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
+        client.to(this.playerTransport(player)).emit('remove-player-tokens', {
           playerId: client.id,
           tokenIds,
         });
@@ -646,7 +647,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       client.emit('room-error', { message: 'Cena ativa indisponível. Peça ao mestre para restaurar a Cena inicial.' });
       return;
     }
-    const sceneTokens: TokenData[] = alternative
+    let sceneTokens: TokenData[] = alternative
       ? (await this.prisma.token.findMany({
           where: { roomId: data.roomId, sceneId: activeScene.sceneId },
         })).map(t => ({
@@ -660,6 +661,21 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         }))
       : room.tokens;
     const sceneGeometry = alternative ? readScene(alternativeScene!.sceneData) : null;
+    if (alternative) {
+      room.alternativeScenes ??= new Map();
+      const cached = room.alternativeScenes.get(activeScene.sceneId);
+      if (cached) {
+        // Keep live moves from existing sockets while refreshing the GM's
+        // latest geometry when another player joins this same scene.
+        cached.walls = sceneGeometry!.walls;
+        cached.gridSize = sceneGeometry!.settings.gridSize;
+        sceneTokens = cached.tokens;
+      } else {
+        room.alternativeScenes.set(activeScene.sceneId, {
+          tokens: sceneTokens, walls: sceneGeometry!.walls, gridSize: sceneGeometry!.settings.gridSize,
+        });
+      }
+    }
 
     let playerName: string;
     if (session?.name) {
@@ -784,7 +800,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         isSpeaking: p.isSpeaking,
       })),
       tokens: sceneTokens,
-      walls: alternative ? sceneGeometry!.walls : room.walls ?? [],
+      walls: alternative ? room.alternativeScenes!.get(activeScene.sceneId)!.walls : room.walls ?? [],
       spatialAudioSettings: room.spatialAudioSettings,
       ambientPreset: alternative ? 'off' : room.ambientPreset ?? 'off',
       // Dice rows are legacy room-wide: do not disclose them to a different scene.
