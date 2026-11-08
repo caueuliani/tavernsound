@@ -115,6 +115,9 @@ describe('GameGateway regressions', () => {
       gateway.handleMoveToken({ tokenId: 'beach-npc', x: 4, y: 4 }, client);
       gateway.handleUpdateTokenHp({ tokenId: 'beach-npc', hp: 1, maxHp: 10 }, client);
       await gateway.handleCreateToken({ tokenId: 'beach-new', x: 1, y: 1, color: 0 }, client);
+      await gateway.handleRollDice({ quantity: 1, sides: 20, modifier: 0 }, client);
+      expect(prisma.diceRoll.findMany).toHaveBeenCalled();
+      expect(prisma.diceRoll.create).toBeUndefined();
       expect(prisma.token.create).not.toHaveBeenCalled();
       expect(prisma.token.update).not.toHaveBeenCalled();
     } finally {
