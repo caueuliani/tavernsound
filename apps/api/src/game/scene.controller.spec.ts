@@ -35,12 +35,14 @@ describe('Scene storage and permissions', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
         upsert: jest.fn().mockImplementation(async ({ create }: any) => create),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       roomMember: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
     };
     gateway = { publishScene: jest.fn(),
       requestSceneTransferPreflight: jest.fn().mockReturnValue({ requestId: 'c456c012-2b12-4c89-9e12-88442100f001', status: 'pending', expiresAt: Date.now() + 45_000 }),
-      sceneTransferPreflightStatus: jest.fn().mockReturnValue({ requestId: 'c456c012-2b12-4c89-9e12-88442100f001', status: 'accepted' }) };
+      sceneTransferPreflightStatus: jest.fn().mockReturnValue({ requestId: 'c456c012-2b12-4c89-9e12-88442100f001', status: 'accepted' }),
+      recoverPlayerToInitial: jest.fn() };
     controller = new SceneController(prisma, { require: jest.fn(async () => ({ id: 'user-1' })) } as any, access, gateway);
   });
   afterEach(async () => {
@@ -219,6 +221,39 @@ describe('Scene storage and permissions', () => {
     await expect(controller.transferPreflightStatus('ABC123', 'c456c012-2b12-4c89-9e12-88442100f001', req))
       .rejects.toThrow('Apenas mestre');
     expect(gateway.sceneTransferPreflightStatus).not.toHaveBeenCalled();
+  });
+  it('returns stranded active players to the initial scene without erasing staged assignments', async () => {
+    room.ownerId = 'user-1';
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+    const result = await controller.returnPlayerToInitial('ABC123', 'player-1', req);
+    expect(result).toMatchObject({
+      userId: 'player-1', sceneId: 'initial-ABC123',
+      recovered: true, activated: false, mode: 'recovery',
+    });
+    expect(prisma.roomSceneAssignment.updateMany).toHaveBeenCalledWith({
+      where: { roomId: 'ABC123', userId: 'player-1', activeSceneId: { not: null } },
+      data: { activeSceneId: null },
+    });
+    expect(prisma.roomSceneAssignment.upsert).not.toHaveBeenCalled();
+    expect(gateway.recoverPlayerToInitial).toHaveBeenCalledWith('ABC123', 'player-1');
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+  });
+  it('treats recovery as idempotent and still clears pending socket preflights', async () => {
+    room.ownerId = 'user-1';
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+    prisma.roomSceneAssignment.updateMany.mockResolvedValue({ count: 0 });
+    const result = await controller.returnPlayerToInitial('ABC123', 'player-1', req);
+    expect(result.recovered).toBe(false);
+    expect(gateway.recoverPlayerToInitial).toHaveBeenCalledWith('ABC123', 'player-1');
+  });
+  it('forbids recovery for a foreign/non-member player or non-GM account', async () => {
+    room.ownerId = 'user-1';
+    await expect(controller.returnPlayerToInitial('ABC123', 'user-1', req)).rejects.toThrow('mestre');
+    await expect(controller.returnPlayerToInitial('ABC123', 'outsider', req)).rejects.toThrow('membro ativo');
+    access.requireOwner.mockRejectedValue(new Error('Apenas mestre'));
+    await expect(controller.returnPlayerToInitial('ABC123', 'player-1', req)).rejects.toThrow('Apenas mestre');
+    expect(prisma.roomSceneAssignment.updateMany).not.toHaveBeenCalled();
+    expect(gateway.recoverPlayerToInitial).not.toHaveBeenCalled();
   });
   it('keeps draft scenes isolated from the active VTT map', async () => {
     room.ownerId = 'user-1';
