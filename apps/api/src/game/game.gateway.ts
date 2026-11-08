@@ -138,6 +138,58 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
   private players: Map<string, PlayerData> = new Map();
   private rooms: Map<string, RoomData> = new Map();
+  private readonly transferPreflights = new Map<string, {
+    roomId: string; userId: string; socketId: string; sceneId: string;
+    expiresAt: number; status: 'pending' | 'accepted' | 'rejected';
+  }>();
+  private readonly transferPreflightTtlMs = 45_000;
+
+  requestSceneTransferPreflight(roomId: string, userId: string, sceneId: string) {
+    // Only the authenticated HTTP controller may call this method, after
+    // checking GM ownership, active membership and staged scene ownership.
+    const player = Array.from(this.players.values()).find(p =>
+      p.roomId === roomId && p.userId === userId && p.sceneId === `initial-${roomId}`);
+    if (!player) return { status: 'offline' as const };
+    const socket = this.server?.sockets?.sockets?.get(player.id);
+    if (!socket?.connected) return { status: 'offline' as const };
+    for (const [id, request] of this.transferPreflights) {
+      if (request.expiresAt <= Date.now() || (request.roomId === roomId && request.userId === userId)) {
+        this.transferPreflights.delete(id);
+      }
+    }
+    const requestId = randomUUID();
+    const expiresAt = Date.now() + this.transferPreflightTtlMs;
+    this.transferPreflights.set(requestId, { roomId, userId, socketId: player.id, sceneId, expiresAt, status: 'pending' });
+    socket.emit('scene-transfer-preflight', { requestId, sceneId, expiresAt });
+    return { requestId, status: 'pending' as const, expiresAt };
+  }
+
+  sceneTransferPreflightStatus(roomId: string, requestId: string) {
+    const request = this.transferPreflights.get(requestId);
+    if (!request || request.roomId !== roomId) return null;
+    if (request.expiresAt <= Date.now()) {
+      this.transferPreflights.delete(requestId);
+      return { requestId, status: 'expired' as const };
+    }
+    return { requestId, status: request.status, expiresAt: request.expiresAt };
+  }
+
+  @SubscribeMessage('scene-transfer-preflight-response')
+  handleSceneTransferPreflightResponse(
+    @MessageBody() data: { requestId?: unknown; accepted?: unknown },
+    @ConnectedSocket() client: Socket,
+  ) {
+    if (typeof data?.requestId !== 'string' || typeof data?.accepted !== 'boolean') return;
+    const request = this.transferPreflights.get(data.requestId);
+    const player = this.players.get(client.id);
+    if (!request || !player || request.status !== 'pending' || request.expiresAt <= Date.now()) return;
+    if (request.socketId !== client.id || request.userId !== player.userId ||
+        request.roomId !== player.roomId || request.sceneId === player.sceneId) return;
+    request.status = data.accepted ? 'accepted' : 'rejected';
+    // An acknowledgement is NOT authority to activate a scene. Neither
+    // activeSceneId nor Agora/Socket.IO membership changes in this PR.
+  }
+
 
   private parseSessionCookie(client: Socket) {
     return client.data.session as Awaited<ReturnType<SessionService['resolve']>>;
@@ -207,6 +259,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     const player = this.players.get(client.id);
     if (!player) return;
+    for (const [id, request] of this.transferPreflights) {
+      if (request.socketId === client.id) this.transferPreflights.delete(id);
+    }
 
     if (player.roomId) {
       const room = this.rooms.get(player.roomId);

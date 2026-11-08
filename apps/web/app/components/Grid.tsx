@@ -329,6 +329,18 @@ export default function Grid({ roomId }: GridProps) {
       socket.emit('join-room', { roomId })
     })
 
+    socket.on('scene-transfer-preflight', (data: { requestId?: string; sceneId?: string; expiresAt?: number }) => {
+      if (typeof data?.requestId !== 'string' || typeof data.sceneId !== 'string' ||
+          typeof data.expiresAt !== 'number' || data.expiresAt <= Date.now()) return
+      // Deliberately NO map loading, Agora switch, or active assignment update.
+      // A future transfer protocol will use this acknowledgement as a precondition.
+      const accepted = window.confirm(
+        'O mestre está verificando sua conexão para uma futura transferência de cenário. ' +
+        'Aceitar esta verificação NÃO muda seu mapa nem seu áudio. Confirmar?',
+      )
+      if (socket.connected) socket.emit('scene-transfer-preflight-response', { requestId: data.requestId, accepted })
+    })
+
     socket.on('connect_error', () => setRoomError('Não foi possível conectar. Faça login novamente ou verifique o servidor.'))
     socket.on('room-error', (data: { message: string }) => { creatingTokenRef.current = false; setRoomError(data.message) })
 

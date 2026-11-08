@@ -51,6 +51,40 @@ describe('GameGateway regressions', () => {
     expect((gateway as any).players.size).toBe(0);
   });
 
+  it('requires a connected, scene-authorized player for preflight and binds acknowledgement to that socket', () => {
+    const { player } = prepareRoom();
+    (player as any).userId = 'player-1';
+    (player as any).sceneId = 'initial-ABC123';
+    client.connected = true;
+    expect(gateway.requestSceneTransferPreflight('ABC123', 'other-user', 'beach-123')).toEqual({ status: 'offline' });
+    const result = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    expect(result.status).toBe('pending');
+    expect(client.emit).toHaveBeenCalledWith('scene-transfer-preflight',
+      expect.objectContaining({ requestId: result.requestId, sceneId: 'beach-123' }));
+    expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toMatchObject({ status: 'pending' });
+    expect(gateway.sceneTransferPreflightStatus('DEF456', result.requestId!)).toBeNull();
+
+    gateway.handleSceneTransferPreflightResponse({ requestId: result.requestId, accepted: 'yes' } as any, client);
+    expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toMatchObject({ status: 'pending' });
+    gateway.handleSceneTransferPreflightResponse({ requestId: result.requestId, accepted: true }, { ...client, id: 'intruder' } as any);
+    expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toMatchObject({ status: 'pending' });
+    gateway.handleSceneTransferPreflightResponse({ requestId: result.requestId, accepted: true }, client);
+    expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toMatchObject({ status: 'accepted' });
+    expect(prisma.room.update).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending preflight on disconnect and rejects replies for old sockets', () => {
+    const { player } = prepareRoom();
+    (player as any).userId = 'player-1';
+    (player as any).sceneId = 'initial-ABC123';
+    client.connected = true;
+    const result = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    gateway.handleDisconnect(client);
+    expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toBeNull();
+    gateway.handleSceneTransferPreflightResponse({ requestId: result.requestId, accepted: true }, client);
+    expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toBeNull();
+  });
+
   it('does not accept another voice identity supplied by the client', () => {
     const { player } = prepareRoom();
     client.data.session = { id: 'owner' };
@@ -160,7 +194,7 @@ describe('GameGateway regressions', () => {
 
   it('never replays voice identities from another scene in the same room', () => {
     const { player } = prepareRoom();
-    player.sceneId = 'initial-ABC123';
+    (player as any).sceneId = 'initial-ABC123';
     client.data.session = { id: 'owner' };
     const players = (gateway as any).players;
     players.set('initial-peer', { roomId: 'ABC123', sceneId: 'initial-ABC123', agoraUid: 'same-uid' });

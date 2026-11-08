@@ -196,6 +196,56 @@ export class SceneController {
   }
 
   /**
+   * This preflight proves the target socket receives a GM-authorized request.
+   * No activation occurs; the player remains in the initial scene.
+   */
+  @Post('transfers/:userId/preflight')
+  async requestTransferPreflight(
+    @Param('roomId') roomId: string,
+    @Param('userId') targetUserId: string,
+    @Req() req: Request,
+  ) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.requireOwner(roomId, user.id);
+    if (targetUserId === room.ownerId) throw new BadRequestException('O mestre não pode transferir a si mesmo.');
+    const [member, assignment] = await Promise.all([
+      this.prisma.roomMember.findFirst({
+        where: { roomId, userId: targetUserId, leftAt: null },
+        select: { id: true },
+      }),
+      this.prisma.roomSceneAssignment.findUnique({
+        where: { roomId_userId: { roomId, userId: targetUserId } },
+        select: { sceneId: true, activeSceneId: true },
+      }),
+    ]);
+    if (!member) throw new NotFoundException('Jogador não é membro ativo desta sala.');
+    if (!assignment) throw new BadRequestException('Defina primeiro o destino do jogador.');
+    if (assignment.sceneId === `initial-${roomId}`) throw new BadRequestException('Escolha uma cena diferente da inicial.');
+    if (assignment.activeSceneId) throw new ConflictException('O jogador já possui cena ativa diferente da inicial.');
+    const scene = await this.prisma.scene.findFirst({
+      where: { roomId, id: assignment.sceneId }, select: { id: true },
+    });
+    if (!scene) throw new NotFoundException('Destino da transferência não pertence à sala.');
+    const preflight = this.gateway.requestSceneTransferPreflight(roomId, targetUserId, scene.id);
+    if (preflight.status === 'offline') throw new ConflictException('O jogador precisa estar conectado à mesa.');
+    return { ...preflight, mode: 'preflight', activated: false };
+  }
+
+  @Get('transfers/preflight/:requestId')
+  async transferPreflightStatus(
+    @Param('roomId') roomId: string,
+    @Param('requestId') requestId: string,
+    @Req() req: Request,
+  ) {
+    const user = await this.sessions.require(req.headers.cookie);
+    await this.access.requireOwner(roomId, user.id);
+    if (!/^[a-f0-9-]{36}$/.test(requestId)) throw new NotFoundException('Verificação não encontrada.');
+    const result = this.gateway.sceneTransferPreflightStatus(roomId, requestId);
+    if (!result) throw new NotFoundException('Verificação não encontrada ou cancelada.');
+    return { ...result, activated: false };
+  }
+
+  /**
    * Read-only data plane for future scene transfers. Returning a snapshot
    * does NOT activate a scene, join a Socket.IO room or move Agora media.
    */
