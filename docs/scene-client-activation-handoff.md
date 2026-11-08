@@ -11,7 +11,7 @@ Esta PR conecta a ativação transacional da PR #36 à mesa do navegador **somen
 1. Mestre define o destino, solicita preflight e jogador confirma.
 2. Em um cliente habilitado, o mestre vê **Ativar transferência (experimental)**.
 3. A API exige mestre, destino válido, preflight aceito em socket V2 e executa uma transação para mudar `activeSceneId` e `Token.sceneId` juntos.
-4. O gateway remove o token antigo do mapa inicial e emite `scene-activation-required` ao destinatário.
+4. O gateway remove o token antigo do mapa inicial e emite `scene-activation-required` ao destinatário. Outras abas da mesma conta naquela sala são avisadas e desconectadas para não manterem sessão RTC anterior.
 5. O navegador recarrega a página (interrompendo Socket.IO, microfone, webcam, nós espaciais e Pixi), volta ao backend e ingressa no grupo Socket.IO da nova cena com token e névoa daquela cena.
 6. `useSpatialAudio` pede credenciais assinadas da cena e entra no canal Agora correto.
 7. O cliente só emite `scene-client-ready` depois de carregar o snapshot validado, renderizar a imagem do mapa (se houver), e conseguir conectar/publicar seu áudio.
@@ -25,6 +25,6 @@ Esta PR conecta a ativação transacional da PR #36 à mesa do navegador **somen
 - A webcam **não** é reativada automaticamente. A pessoa precisa habilitá-la explicitamente depois de trocar de cena.
 - Não há revogação imediata dos tokens RTC já emitidos. Aplicação usa canais diferentes, mas o serviço pode aceitar tokens anteriores até expirar.
 - Token em cena alternativa ainda é **somente leitura**: não movimenta, cria ou atualiza HP. Rolagens nessa cena são bloqueadas enquanto não houver histórico por cena.
-- Privacidade de canais, falhas de imagem, interrupções de rede, duas abas da mesma conta e retorno da Cena inicial requerem homologação prática.
+- Privacidade de canais, falhas de imagem, interrupções de rede, duas abas da mesma conta e retorno da Cena inicial requerem homologação prática. A lógica de desconexão de abas antigas deve ser testada em navegadores reais.
 
 Nenhuma migration nova. **Não habilitar as flags sem checklist de testes de ponta a ponta.**
