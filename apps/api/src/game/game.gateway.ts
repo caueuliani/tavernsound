@@ -392,7 +392,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
   @SubscribeMessage('join-room')
   async handleJoinRoom(
-    @MessageBody() data: { roomId: string },
+    @MessageBody() data: { roomId: string; sceneTransportV2?: boolean },
     @ConnectedSocket() client: Socket,
   ) {
     if (client.data.joining) return;
@@ -404,7 +404,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     } finally { client.data.joining = false; }
   }
 
-  private async joinRoom(data: { roomId: string }, client: Socket) {
+  private async joinRoom(data: { roomId: string; sceneTransportV2?: boolean }, client: Socket) {
     const session = this.parseSessionCookie(client);
     if (!session?.id) {
       client.emit('room-error', { message: 'Faça login para entrar na sala.' });
@@ -420,10 +420,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       client.emit('room-error', { message: 'Sala indisponível ou conta não autorizada. Peça acesso ao mestre.' });
       return;
     }
-    // The old VTT still broadcasts tokens, fog, voice identities and chat to
-    // the room-wide socket. Deny off-initial active players until every legacy
-    // event is scoped: simply joining another scene room is NOT isolation.
-    if (activeScene.sceneId !== activeScene.initialSceneId) {
+    // Alternative admission is an explicitly coordinated, default-OFF
+    // protocol. Legacy clients must never enter an alternative scene while
+    // their Agora client is still on the shared room-wide audio/video channel.
+    const alternative = activeScene.sceneId !== activeScene.initialSceneId;
+    if (alternative && (process.env.SCENE_SCOPED_ADMISSION !== 'true' || data?.sceneTransportV2 !== true)) {
       client.emit('room-error', { message: 'Esta cena requer a atualização do protocolo da mesa. Retorne à cena inicial com o mestre.' });
       return;
     }
@@ -483,6 +484,33 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       this.rooms.set(data.roomId, room);
       console.log(`🔄 Sala ${data.roomId} restaurada do banco com ${restoredTokens.length} token(s)`);
     }
+
+    // RoomData is the legacy initial-scene cache. Never copy its tokens or
+    // geometry into an alternative scene: load the authorized scene directly.
+    const alternativeScene = alternative
+      ? await this.prisma.scene.findFirst({
+          where: { roomId: data.roomId, id: activeScene.sceneId },
+          select: { id: true, sceneData: true, fogData: true },
+        })
+      : null;
+    if (alternative && !alternativeScene) {
+      client.emit('room-error', { message: 'Cena ativa indisponível. Peça ao mestre para restaurar a Cena inicial.' });
+      return;
+    }
+    const sceneTokens: TokenData[] = alternative
+      ? (await this.prisma.token.findMany({
+          where: { roomId: data.roomId, sceneId: activeScene.sceneId },
+        })).map(t => ({
+          id: t.id, sceneId: activeScene.sceneId, kind: t.kind,
+          x: t.positionX ?? t.x, y: t.positionY ?? t.y,
+          color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
+          playerId: t.id,
+          playerName: t.kind === 'SCENERY' ? sceneryNameOrFallback(t.name) : t.name,
+          hp: t.hp ?? undefined, maxHp: t.maxHp ?? undefined,
+          imageUrl: t.imageUrl ?? undefined, size: tokenSize(t.sizeMultiplier),
+        }))
+      : room.tokens;
+    const sceneGeometry = alternative ? readScene(alternativeScene!.sceneData) : null;
 
     let playerName: string;
     if (session?.name) {
@@ -555,7 +583,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     };
 
     const persistentTokenId = createHash('sha256').update(`${data.roomId}:${session.id}`).digest('hex');
-    const ownToken = room.tokens.find(t => t.id === persistentTokenId);
+    const ownToken = sceneTokens.find(t => t.id === persistentTokenId);
     if (ownToken && !isHost) {
       this.server.to(this.tokenTransport(data.roomId, ownToken)).emit('remove-player-tokens', { playerId: ownToken.playerId });
       ownToken.playerId = client.id;
@@ -567,7 +595,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     room.players.set(client.id, playerData);
     client.join(data.roomId);
     client.join(activeSocketRoom);
-    client.emit('scene-transport-ready', { sceneId: activeScene.sceneId, isolated: false });
+    client.emit('scene-transport-ready', { sceneId: activeScene.sceneId, isolated: alternative });
 
     const [recentRolls, chatEvents] = await Promise.all([
       this.prisma.diceRoll.findMany({
@@ -603,11 +631,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         isDeafened: p.isDeafened,
         isSpeaking: p.isSpeaking,
       })),
-      tokens: room.tokens,
-      walls: room.walls ?? [],
+      tokens: sceneTokens,
+      walls: alternative ? sceneGeometry!.walls : room.walls ?? [],
       spatialAudioSettings: room.spatialAudioSettings,
       ambientPreset: room.ambientPreset ?? 'off',
-      recentRolls: recentRolls.reverse().map(r => ({
+      // Dice rows are legacy room-wide: do not disclose them to a different scene.
+      recentRolls: (alternative ? [] : recentRolls.reverse()).map(r => ({
         playerId: '',
         playerName: r.playerName,
         formula: r.diceType,
@@ -629,8 +658,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
           timestamp: e.timestamp.getTime(),
         };
       }),
-      fogData: room.fogData ?? null,
-      mapUrl: room.mapUrl ?? null,
+      fogData: alternative ? (Array.isArray(alternativeScene!.fogData) ? alternativeScene!.fogData : null) : room.fogData ?? null,
+      mapUrl: alternative ? null : room.mapUrl ?? null,
     });
 
     client.to(this.playerTransport(playerData)).emit('player-joined', {
@@ -730,6 +759,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
+    // Alternative scene gameplay mutation requires the per-scene rules engine.
+    // Until then, entry is read-only to avoid writing to initial-scene tokens.
+    if (player.sceneId !== `initial-${player.roomId}`) {
+      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
+      return;
+    }
 
     const room = this.rooms.get(player.roomId);
     if (!room) return;
