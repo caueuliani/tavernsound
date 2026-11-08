@@ -829,6 +829,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
+    // Alternative token editing will be enabled only after scene-aware
+    // ownership, persistence and movement validation are fully coordinated.
+    if (player.sceneId !== `initial-${player.roomId}`) {
+      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
+      return;
+    }
 
     const room = this.rooms.get(player.roomId);
     if (!room) return;
@@ -978,6 +984,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
+    // Alternative token editing will be enabled only after scene-aware
+    // ownership, persistence and movement validation are fully coordinated.
+    if (player.sceneId !== `initial-${player.roomId}`) {
+      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
+      return;
+    }
 
     const room = this.rooms.get(player.roomId);
     if (!room) return;
