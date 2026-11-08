@@ -27,3 +27,14 @@ export function readRtcCredentials(result: unknown, roomId: string, sceneId?: st
   }
   return { token: data.token, uid: data.uid, channelName: data.channelName }
 }
+
+export function stopMediaCapture(audio?: { close(): void } | null, camera?: { close(): void } | null): void {
+  // Stop camera first: no webcam should remain live while leaving a scene.
+  try { camera?.close() } catch {}
+  try { audio?.close() } catch {}
+}
+
+export async function joinAfterLeave<T>(previousLeave: Promise<void>, join: () => Promise<T>): Promise<T> {
+  await previousLeave
+  return join()
+}
