@@ -7,6 +7,7 @@ describe('Room permissions', () => {
     prisma = {
       room: { findUnique: jest.fn().mockResolvedValue({ id: 'ABC123', ownerId: 'owner', isPublic: false, password: null }) },
       roomMember: { findFirst: jest.fn().mockResolvedValue(null) },
+      scene: { findFirst: jest.fn().mockResolvedValue({ id: 'initial-ABC123' }) },
     };
     access = new RoomAccessService(prisma);
   });
@@ -25,6 +26,23 @@ describe('Room permissions', () => {
   it('does not bypass a password simply because a room is public', async () => {
     prisma.room.findUnique.mockResolvedValue({ ownerId: 'owner', isPublic: true, password: 'protected' });
     await expect(access.require('ABC123', 'visitor')).rejects.toThrow();
+  });
+  it('allows only the initial scene to receive RTC credentials before live scene cutover', async () => {
+    await expect(access.requireSceneMedia('ABC123', 'owner', 'initial-ABC123'))
+      .resolves.toEqual({ id: 'initial-ABC123' });
+    await expect(access.requireSceneMedia('ABC123', 'owner', 'secret-scene'))
+      .rejects.toThrow('ainda não está ativo');
+    expect(prisma.scene.findFirst).toHaveBeenCalledWith({
+      where: { roomId: 'ABC123' }, orderBy: { position: 'asc' }, select: { id: true },
+    });
+  });
+  it('does not accept a staged assignment as permission to listen to a draft scene', async () => {
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'membership' });
+    await expect(access.requireSceneMedia('ABC123', 'member', 'secret-scene'))
+      .rejects.toThrow('ainda não está ativo');
+    prisma.roomMember.findFirst.mockResolvedValue(null);
+    await expect(access.requireSceneMedia('ABC123', 'stranger', 'initial-ABC123'))
+      .rejects.toThrow('Peça ao mestre');
   });
   it('rejects malformed room identifiers before a database query', async () => {
     await expect(access.require('../ABC123', 'visitor')).rejects.toThrow();
