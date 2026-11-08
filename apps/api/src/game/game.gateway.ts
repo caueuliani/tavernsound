@@ -48,6 +48,7 @@ interface PlayerData {
   agoraUid?: string;
   name?: string;
   roomId?: string;
+  sceneId?: string;
   userId?: string;
   isHost?: boolean;
   audioPosition?: AudioPosition;
@@ -88,6 +89,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   }
   private tokenTransport(roomId: string, token?: TokenData) {
     return sceneSocketRoom(roomId, token?.sceneId ?? `initial-${roomId}`);
+  }
+  private playerTransport(player: PlayerData) {
+    return sceneSocketRoom(player.roomId!, player.sceneId ?? `initial-${player.roomId}`);
+  }
+  private sameScene(a: PlayerData, b: PlayerData) {
+    return a.roomId === b.roomId && (a.sceneId ?? `initial-${a.roomId}`) === (b.sceneId ?? `initial-${b.roomId}`);
   }
 
   publishTokenName(roomId: string, tokenId: string, name: string) {
@@ -206,7 +213,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       if (room) {
         room.players.delete(client.id);
 
-        client.to(player.roomId).emit('player-left', {
+        client.to(this.playerTransport(player)).emit('player-left', {
           playerId: client.id,
           playerName: player.name,
         });
@@ -462,6 +469,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       tokens: [],
       name: playerName,
       roomId: data.roomId,
+      sceneId: activeScene.sceneId,
       userId: session?.id,
       isHost,
       audioPosition: isHost ? undefined : { x: 0, y: 0, z: 0 },
@@ -509,7 +517,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       sceneId: activeScene.sceneId,
       playerName,
       isHost,
-      players: Array.from(room.players.values()).map(p => ({
+      players: Array.from(room.players.values()).filter(p => this.sameScene(p, playerData)).map(p => ({
         id: p.id,
         name: p.name,
         isHost: p.isHost === true,
@@ -544,7 +552,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       mapUrl: room.mapUrl ?? null,
     });
 
-    client.to(data.roomId).emit('player-joined', {
+    client.to(this.playerTransport(playerData)).emit('player-joined', {
       playerId: client.id,
       playerName,
       isHost,
@@ -572,7 +580,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     player.audioPosition = data.position;
 
-    client.to(player.roomId).emit('player-audio-position-updated', {
+    client.to(this.playerTransport(player)).emit('player-audio-position-updated', {
       playerId: client.id,
       position: data.position,
     });
@@ -588,7 +596,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     player.isMuted = data.isMuted;
 
-    this.server.to(player.roomId).emit('player-audio-mute-updated', {
+    this.server.to(this.playerTransport(player)).emit('player-audio-mute-updated', {
       playerId: client.id,
       isMuted: data.isMuted,
     });
@@ -604,7 +612,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     player.isDeafened = data.isDeafened;
 
-    this.server.to(player.roomId).emit('player-audio-deafen-updated', {
+    this.server.to(this.playerTransport(player)).emit('player-audio-deafen-updated', {
       playerId: client.id,
       isDeafened: data.isDeafened,
     });
@@ -623,7 +631,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     room.spatialAudioSettings = data.settings;
 
-    this.server.to(player.roomId).emit('spatial-audio-settings-updated', {
+    this.server.to(this.playerTransport(player)).emit('spatial-audio-settings-updated', {
       settings: data.settings,
     });
   }
@@ -759,7 +767,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     const room = this.rooms.get(player.roomId);
     if (!room) return;
     room.ambientPreset = data.preset;
-    this.server.to(player.roomId).emit('ambient-preset-updated', { preset: data.preset });
+    this.server.to(this.playerTransport(player)).emit('ambient-preset-updated', { preset: data.preset });
   }
 
   @SubscribeMessage('announce-agora-uid')
@@ -777,12 +785,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     // The audio listener starts after room-joined. Replay existing peers only
     // once this client has joined Agora and is ready to receive their IDs.
     for (const [socketId, peer] of this.players) {
-      if (socketId !== client.id && peer.roomId === player.roomId && peer.agoraUid) {
+      if (socketId !== client.id && this.sameScene(peer, player) && peer.agoraUid) {
         client.emit('agora-uid-announced', { socketId, agoraUid: peer.agoraUid, isHost: peer.isHost === true });
       }
     }
 
-    this.server.to(player.roomId).emit('agora-uid-announced', {
+    this.server.to(this.playerTransport(player)).emit('agora-uid-announced', {
       socketId: client.id,
       agoraUid: data.agoraUid,
       isHost: player.isHost === true,
@@ -799,7 +807,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     player.isSpeaking = data.isSpeaking;
 
-    client.to(player.roomId).emit('player-speaking-update', {
+    client.to(this.playerTransport(player)).emit('player-speaking-update', {
       playerId: client.id,
       isSpeaking: data.isSpeaking,
     });
@@ -841,7 +849,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
           rolls: rolled.rolls,
         },
       });
-      this.server.to(player.roomId).emit('dice-rolled', rollData);
+      this.server.to(this.playerTransport(player)).emit('dice-rolled', rollData);
     } catch {
       client.emit('room-error', { message: 'A rolagem não pôde ser registrada. Tente novamente.' });
     }
@@ -891,14 +899,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       timestamp: Date.now(),
     };
 
-    this.server.to(player.roomId).emit('chat-message-received', message);
+    this.server.to(this.playerTransport(player)).emit('chat-message-received', message);
 
     this.prisma.event
       .create({
         data: {
           eventType: 'CHAT',
           userId: player.userId ?? null,
-          metadata: { roomId: player.roomId, playerName: message.playerName, text: message.text },
+          metadata: { roomId: player.roomId, sceneId: player.sceneId ?? `initial-${player.roomId}`, playerName: message.playerName, text: message.text },
         },
       })
       .catch(() => {});
