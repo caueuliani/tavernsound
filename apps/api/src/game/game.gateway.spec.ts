@@ -115,14 +115,28 @@ describe('GameGateway regressions', () => {
       expect(prisma.token.findMany).toHaveBeenCalledWith({ where: { roomId: 'ABC123', sceneId: 'beach-123' } });
       expect(client.emit).toHaveBeenCalledWith('scene-transport-ready',
         { sceneId: 'beach-123', isolated: false, socketScoped: true });
+      // Another player's scenery cannot be moved or edited.
       gateway.handleMoveToken({ tokenId: 'beach-npc', x: 4, y: 4 }, client);
       gateway.handleUpdateTokenHp({ tokenId: 'beach-npc', hp: 1, maxHp: 10 }, client);
-      await gateway.handleCreateToken({ tokenId: 'beach-new', x: 1, y: 1, color: 0 }, client);
+      expect(prisma.token.update).not.toHaveBeenCalled();
+      // The own persistent token can now be created and moved in its scene.
+      await gateway.handleCreateToken({ tokenId: 'beach-new', x: 4, y: 4, color: 0 }, client);
+      const ownId = createHash('sha256').update('ABC123:player').digest('hex');
+      expect(prisma.token.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ roomId: 'ABC123', sceneId: 'beach-123', id: ownId }),
+      });
+      gateway.handleMoveToken({ tokenId: ownId, x: 5, y: 5 }, client);
+      gateway.handleUpdateTokenHp({ tokenId: ownId, hp: 5, maxHp: 10 }, client);
+      expect(prisma.token.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: ownId } }));
+      expect(room.tokens).toEqual([initialToken]);
+      const active = (gateway as any).rooms.get('ABC123').alternativeScenes.get('beach-123');
+      expect(active.tokens.map((token: any) => token.id)).toEqual(['beach-npc', ownId]);
+      expect(active.tokens.find((token: any) => token.id === ownId)).toMatchObject({ x: 5, y: 5, hp: 5 });
       await gateway.handleRollDice({ quantity: 1, sides: 20, modifier: 0 }, client);
       expect(prisma.diceRoll.findMany).toHaveBeenCalled();
       expect(prisma.diceRoll.create).not.toHaveBeenCalled();
-      expect(prisma.token.create).not.toHaveBeenCalled();
-      expect(prisma.token.update).not.toHaveBeenCalled();
+      expect(broadcast).toHaveBeenCalledWith('dice-rolled', expect.objectContaining({ playerId: client.id }));
+      expect(gateway.server.to).not.toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
     } finally {
       if (old === undefined) delete process.env.SCENE_SCOPED_ADMISSION;
       else process.env.SCENE_SCOPED_ADMISSION = old;
