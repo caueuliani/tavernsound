@@ -13,6 +13,7 @@ import ChatBox from './ChatBox'
 import RoomMembers from './RoomMembers'
 import { apiUrl, socketUrl } from '../lib/api-url'
 import { TOKEN_IMAGE_FALLBACK, tokenImageError } from '../lib/token-image-error'
+import { readSceneSnapshot, sceneSnapshotPath } from '../lib/scene-snapshot'
 import { openingBounds, pointOnWall, solidSegments } from '../lib/scene-geometry'
 import { DEFAULT_GRID_SIZE, gridLinePositions, gridStep, snapTokenCoordinate } from '../lib/scene-grid'
 import { arrowDestination, isTypingTarget, keyboardToken, lastValidTokenCell, movementSegments, TOKEN_SIZES, tokenCenter, tokenHudLayout, tokenRadius, tokenSize, validTokenMove, validTokenPosition } from '../lib/token-movement'
@@ -820,15 +821,44 @@ export default function Grid({ roomId }: GridProps) {
       if (!disposed) setScene(previous => previous && previous.revision > value.revision ? previous : value)
     }
     socket.on('scene-updated', applyScene)
-    fetch(apiUrl(`/rooms/${roomId}/scene`), { credentials: 'include', cache: 'no-store' })
-      .then(async response => {
-        const data = await response.json()
-        if (!response.ok) throw new Error(data.message || 'Não foi possível carregar o cenário.')
-        applyScene(data.scene)
-      })
-      .catch(error => { if (!disposed) setRoomError(error.message) })
-    return () => { disposed = true; socket.off('scene-updated', applyScene) }
-  }, [roomId, connected])
+    // Scene RTC transport is opt-in until active scene switching has completed
+    // end-to-end validation. Only the server-confirmed sceneId can be loaded.
+    const useSnapshot = process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF === 'true'
+    if (useSnapshot && !rtcSceneId) {
+      return () => { disposed = true; socket.off('scene-updated', applyScene) }
+    }
+    const controller = new AbortController()
+    const path = useSnapshot
+      ? sceneSnapshotPath(roomId, rtcSceneId!)
+      : `/rooms/${roomId}/scene`
+    fetch(apiUrl(path), {
+      credentials: 'include', cache: 'no-store', signal: controller.signal,
+    }).then(async response => {
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Não foi possível carregar o cenário.')
+      if (disposed) return
+      if (useSnapshot) {
+        const snapshot = readSceneSnapshot(data, roomId, rtcSceneId!)
+        // Replacing the scene resets the old map source; never continue
+        // displaying a legacy image when the new scene has no map.
+        setMapData(null)
+        setScene(snapshot.scene as Scene)
+        if (Array.isArray(snapshot.fogData) && snapshot.fogData.length === GRID_CELLS * GRID_CELLS) {
+          fogDataRef.current = snapshot.fogData
+          fogCellsRef.current.forEach((cell, idx) => { cell.visible = !snapshot.fogData![idx] })
+        }
+        // Token visibility remains owned by Socket.IO until the switch
+        // protocol supports scene-scoped token identities end to end.
+      } else applyScene(data.scene)
+    }).catch(error => {
+      if (!disposed && error?.name !== 'AbortError') setRoomError(error.message)
+    })
+    return () => {
+      disposed = true
+      controller.abort()
+      socket.off('scene-updated', applyScene)
+    }
+  }, [roomId, connected, rtcSceneId])
 
   // ── Mapa: recarregar quando muda ──────────────────────────────────────────
   useEffect(() => {
