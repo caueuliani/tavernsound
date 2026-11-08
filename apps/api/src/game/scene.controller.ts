@@ -32,11 +32,9 @@ export class SceneController {
     const stored = await this.prisma.scene.findFirst({ where: { id: sceneId, roomId: room.id } });
     if (!stored) throw new NotFoundException('Cena não encontrada nesta sala.');
     if (!edit && room.ownerId !== userId) {
-      const assigned = await this.prisma.roomSceneAssignment.findUnique({
-        where: { roomId_userId: { roomId: room.id, userId } },
-      });
+      // Staged assignments are GM-only preparation; never reveal draft scenes to players.
       const first = await this.prisma.scene.findFirst({ where: { roomId: room.id }, orderBy: { position: 'asc' } });
-      if (sceneId !== (assigned?.sceneId ?? first?.id)) throw new ForbiddenException('Cena não disponível para este jogador.');
+      if (sceneId !== first?.id) throw new ForbiddenException('Cena não disponível para este jogador.');
     }
     return stored;
   }
@@ -79,10 +77,8 @@ export class SceneController {
       select: { id: true, name: true, position: true },
     });
     if (isHost) return { scenes, currentSceneId: scenes[0]?.id ?? null, isHost };
-    const assignment = await this.prisma.roomSceneAssignment.findUnique({
-      where: { roomId_userId: { roomId, userId: user.id } },
-    });
-    const visible = scenes.find(scene => scene.id === assignment?.sceneId) ?? scenes[0];
+    // Until live cutover, only the initial scene is visible to players.
+    const visible = scenes[0];
     return { scenes: visible ? [visible] : [], currentSceneId: visible?.id ?? null, isHost };
   }
 
