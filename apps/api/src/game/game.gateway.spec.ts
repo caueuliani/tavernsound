@@ -60,10 +60,10 @@ describe('GameGateway regressions', () => {
   });
 
   const prepareRoom = () => {
-    const player = { id: client.id, roomId: 'room-a', isHost: true, tokens: [] as any[] };
-    const room = { id: 'room-a', tokens: [] as any[], players: new Map([[client.id, player]]) };
+    const player = { id: client.id, roomId: 'ABC123', isHost: true, tokens: [] as any[] };
+    const room = { id: 'ABC123', tokens: [] as any[], players: new Map([[client.id, player]]) };
     (gateway as any).players.set(client.id, player);
-    (gateway as any).rooms.set('room-a', room);
+    (gateway as any).rooms.set('ABC123', room);
     return { player, room };
   };
 
@@ -129,10 +129,10 @@ describe('GameGateway regressions', () => {
     prepareRoom();
     await gateway.handleCreateToken({ tokenId: 'npc', x: 1, y: 2, color: 0xff9d00 }, client);
     expect(prisma.token.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ roomId: 'room-a', sceneId: 'initial-room-a' }),
+      data: expect.objectContaining({ roomId: 'ABC123', sceneId: 'initial-ABC123' }),
     });
     expect(broadcast).toHaveBeenCalledWith('token-created',
-      expect.objectContaining({ sceneId: 'initial-room-a' }));
+      expect.objectContaining({ sceneId: 'initial-ABC123' }));
   });
 
   it('still reconnects a normal player to their persisted personal token', async () => {
@@ -148,9 +148,9 @@ describe('GameGateway regressions', () => {
     prepareRoom();
     client.data.session = { id: 'owner' };
     const players = (gateway as any).players;
-    players.set('early', { roomId: 'room-a', agoraUid: 'early-uid' });
+    players.set('early', { roomId: 'ABC123', agoraUid: 'early-uid' });
     players.set('foreign', { roomId: 'room-b', agoraUid: 'private-uid' });
-    players.set('silent', { roomId: 'room-a' });
+    players.set('silent', { roomId: 'ABC123' });
     gateway.handleAnnounceAgoraUid({ socketId: 'forged-socket', agoraUid: 'allowed-uid' }, client);
     expect(client.emit.mock.calls).toEqual([
       ['agora-uid-announced', { socketId: 'early', agoraUid: 'early-uid', isHost: false }],
@@ -179,7 +179,7 @@ describe('GameGateway regressions', () => {
     const { player, room } = prepareRoom();
     gateway.handleSetAmbientPreset({ preset: 'beach' }, client);
     expect(room).toMatchObject({ ambientPreset: 'beach' });
-    expect(gateway.server.to).toHaveBeenCalledWith('room-a');
+    expect(gateway.server.to).toHaveBeenCalledWith('ABC123');
     expect(broadcast).toHaveBeenLastCalledWith('ambient-preset-updated', { preset: 'beach' });
 
     broadcast.mockClear();
@@ -331,10 +331,42 @@ describe('GameGateway regressions', () => {
     const { room } = prepareRoom();
     const npc = { id: 'npc', kind: 'SCENERY', playerId: 'npc', playerName: 'Token de cenário' };
     room.tokens.push(npc);
-    gateway.publishTokenName('room-a', 'npc', 'Ferreiro');
+    gateway.publishTokenName('ABC123', 'npc', 'Ferreiro');
     expect(npc.playerName).toBe('Ferreiro');
-    expect(gateway.server.to).toHaveBeenCalledWith('room-a');
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
     expect(broadcast).toHaveBeenCalledWith('token-name-updated', { tokenId: 'npc', name: 'Ferreiro' });
+  });
+
+  it('emits tokens to the server-derived scene group, never the room-wide transport', async () => {
+    const { room } = prepareRoom();
+    const npc = { id: 'beach-npc', kind: 'SCENERY', playerId: 'beach-npc', sceneId: 'beach-123', playerName: 'Beach NPC' };
+    room.tokens.push(npc as any);
+    gateway.publishTokenName('ABC123', 'beach-npc', 'Guardião');
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'beach-123'));
+    expect(gateway.server.to).not.toHaveBeenCalledWith('ABC123');
+    expect(gateway.server.to).not.toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
+
+    (gateway.server.to as jest.Mock).mockClear();
+    gateway.publishTokenDeleted('ABC123', 'beach-npc');
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'beach-123'));
+    expect(gateway.server.to).not.toHaveBeenCalledWith('ABC123');
+  });
+
+  it('does not broadcast token mutations for missing tokens', () => {
+    prepareRoom();
+    gateway.publishTokenName('ABC123', 'missing', 'Unauthorized');
+    gateway.publishTokenSize('ABC123', 'missing', 2);
+    gateway.publishTokenImage('ABC123', 'missing', 'data');
+    gateway.publishTokenDeleted('ABC123', 'missing');
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('routes personal token movement to its scene instead of the entire room', async () => {
+    const { tokenId } = await joinPersistedRoom('player', 'player');
+    client.to.mockClear();
+    gateway.handleMoveToken({ tokenId, x: 5, y: 6 }, client);
+    expect(client.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
+    expect(client.to).not.toHaveBeenCalledWith('ABC123');
   });
 
   it('creates distinct scenery tokens for repeated host clicks and broadcasts each', async () => {
@@ -355,10 +387,10 @@ describe('GameGateway regressions', () => {
     const personal = { id: 'player-token', kind: 'PLAYER', playerId: 'player-socket' };
     room.tokens.push(npc as any, personal as any);
     player.tokens.push(npc as any);
-    gateway.publishTokenDeleted('room-a', 'npc');
+    gateway.publishTokenDeleted('ABC123', 'npc');
     expect(room.tokens).toEqual([personal]);
     expect(player.tokens).toEqual([]);
-    expect(gateway.server.to).toHaveBeenCalledWith('room-a');
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
     expect(broadcast).toHaveBeenCalledWith('token-deleted', { tokenId: 'npc' });
   });
 });
