@@ -42,6 +42,7 @@ model User {
   subscription  Subscription?
   ownedRooms    Room[]    @relation("RoomOwner")
   roomMembers   RoomMember[]
+  sceneAssignments RoomSceneAssignment[]
   diceRolls     DiceRoll[]
   ownedCampaigns Campaign[] @relation("CampaignOwner")
   campaignMemberships CampaignMember[] @relation("CampaignMembership")
@@ -201,6 +202,8 @@ model Room {
   lastActiveAt DateTime @default(now())
   
   tokens      Token[]
+  scenes      Scene[]
+  sceneAssignments RoomSceneAssignment[]
   members     RoomMember[]
   diceRolls   DiceRoll[]
   sessions    GameSession[]
@@ -208,6 +211,38 @@ model Room {
   @@index([ownerId])
   @@index([lastActiveAt])
   @@index([campaignId])
+}
+
+// The legacy Room scene fields remain the source of truth until scene switching
+// is enabled. Expansion is additive so old clients keep working.
+model Scene {
+  id String @id
+  roomId String
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  name String
+  position Int
+  sceneData Json?
+  mapUrl String?
+  fogData Json?
+  tokens Token[]
+  assignments RoomSceneAssignment[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([roomId, position])
+  @@index([roomId])
+}
+
+model RoomSceneAssignment {
+  roomId String
+  userId String
+  sceneId String
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scene Scene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@index([sceneId])
 }
 
 // ====================================
@@ -340,6 +375,8 @@ model Token {
   roomId      String
   room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
   kind        TokenKind @default(PLAYER)
+  sceneId     String?
+  scene       Scene? @relation(fields: [sceneId], references: [id], onDelete: SetNull)
   
   name        String
   x           Int
@@ -359,6 +396,7 @@ model Token {
   updatedAt   DateTime @updatedAt
   
   @@index([roomId])
+  @@index([sceneId])
 }
 
 // ====================================
