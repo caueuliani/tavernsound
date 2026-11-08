@@ -114,6 +114,74 @@ export class SceneController {
     return { id: sceneId, name };
   }
 
+  // Staging only. This assignment deliberately does not change the active
+  // canvas, Socket.IO room, tokens, fog, or Agora channel. A later cutover
+  // will apply scene assignments atomically to the live VTT.
+  @Get('assignments')
+  async assignments(@Param('roomId') roomId: string, @Req() req: Request) {
+    const user = await this.sessions.require(req.headers.cookie);
+    await this.access.requireOwner(roomId, user.id);
+    const [members, assignments, scenes] = await Promise.all([
+      this.prisma.roomMember.findMany({
+        where: { roomId, leftAt: null, userId: { not: null } },
+        select: { userId: true, nickname: true },
+      }),
+      this.prisma.roomSceneAssignment.findMany({
+        where: { roomId }, select: { userId: true, sceneId: true },
+      }),
+      this.prisma.scene.findMany({
+        where: { roomId }, orderBy: { position: 'asc' },
+        select: { id: true, name: true, position: true },
+      }),
+    ]);
+    const assigned = new Map(assignments.map(item => [item.userId, item.sceneId]));
+    const seen = new Set<string>();
+    return {
+      scenes,
+      players: members.filter(member => {
+        if (!member.userId || seen.has(member.userId)) return false;
+        seen.add(member.userId);
+        return true;
+      }).map(member => ({
+        userId: member.userId!,
+        nickname: member.nickname,
+        sceneId: assigned.get(member.userId!) ?? scenes[0]?.id ?? null,
+      })),
+      mode: 'staging',
+    };
+  }
+
+  @Put('assignments/:userId')
+  async stagePlayerScene(
+    @Param('roomId') roomId: string,
+    @Param('userId') targetUserId: string,
+    @Req() req: Request,
+    @Body() body: { sceneId?: unknown },
+  ) {
+    const user = await this.sessions.require(req.headers.cookie);
+    const room = await this.access.requireOwner(roomId, user.id);
+    if (targetUserId === room.ownerId) throw new BadRequestException('O mestre não recebe atribuição de jogador.');
+    const sceneId = typeof body?.sceneId === 'string' ? body.sceneId : '';
+    if (!sceneId || sceneId.length > 120) throw new BadRequestException('Selecione uma cena válida.');
+    const [member, scene] = await Promise.all([
+      this.prisma.roomMember.findFirst({
+        where: { roomId, userId: targetUserId, leftAt: null },
+        select: { id: true },
+      }),
+      this.prisma.scene.findFirst({
+        where: { roomId, id: sceneId }, select: { id: true },
+      }),
+    ]);
+    if (!member) throw new NotFoundException('Jogador não é membro ativo desta sala.');
+    if (!scene) throw new NotFoundException('Cena não pertence a esta sala.');
+    const assignment = await this.prisma.roomSceneAssignment.upsert({
+      where: { roomId_userId: { roomId, userId: targetUserId } },
+      create: { roomId, userId: targetUserId, sceneId },
+      update: { sceneId },
+    });
+    return { userId: targetUserId, sceneId: assignment.sceneId, mode: 'staging' };
+  }
+
   @Get()
   async get(@Param('roomId') id: string, @Query('sceneId') sceneId: string | undefined, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const user = await this.sessions.require(req.headers.cookie);
