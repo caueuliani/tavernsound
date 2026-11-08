@@ -944,6 +944,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player?.roomId) return;
+    // DiceRoll rows currently lack sceneId. Persisting dice from another
+    // scene would leak their results to legacy initial-scene history.
+    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
+      client.emit('room-error', { message: 'Rolagens nesta cena estarão disponíveis após o histórico por cenário.' });
+      return;
+    }
     const request = parseDiceRequest(data);
     if (!request) {
       client.emit('room-error', { message: 'Rolagem inválida. Escolha entre 1 e 30 dados e um modificador de -1000 a 1000.' });
