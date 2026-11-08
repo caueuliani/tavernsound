@@ -8,6 +8,7 @@ describe('Room permissions', () => {
       room: { findUnique: jest.fn().mockResolvedValue({ id: 'ABC123', ownerId: 'owner', isPublic: false, password: null }) },
       roomMember: { findFirst: jest.fn().mockResolvedValue(null) },
       scene: { findFirst: jest.fn().mockResolvedValue({ id: 'initial-ABC123' }) },
+      roomSceneAssignment: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     access = new RoomAccessService(prisma);
   });
@@ -35,6 +36,17 @@ describe('Room permissions', () => {
     expect(prisma.scene.findFirst).toHaveBeenCalledWith({
       where: { roomId: 'ABC123' }, orderBy: { position: 'asc' }, select: { id: true },
     });
+  });
+  it('distinguishes staged scenes from activated scenes for RTC permissions', async () => {
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'member' });
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ activeSceneId: null, sceneId: 'secret-beach' });
+    await expect(access.requireSceneMedia('ABC123', 'member', 'secret-beach')).rejects.toThrow('ainda não está ativo');
+    await expect(access.requireLegacyMedia('ABC123', 'member')).resolves.toMatchObject({ id: 'ABC123' });
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ activeSceneId: 'secret-beach', sceneId: 'secret-beach' });
+    prisma.scene.findFirst.mockImplementation(async ({ where }: any) => ({ id: where.id || 'initial-ABC123' }));
+    await expect(access.requireSceneMedia('ABC123', 'member', 'secret-beach')).resolves.toEqual({ id: 'secret-beach' });
+    await expect(access.requireSceneMedia('ABC123', 'member', 'initial-ABC123')).rejects.toThrow('ainda não está ativo');
+    await expect(access.requireLegacyMedia('ABC123', 'member')).rejects.toThrow('cena ativa');
   });
   it('does not accept a staged assignment as permission to listen to a draft scene', async () => {
     prisma.roomMember.findFirst.mockResolvedValue({ id: 'membership' });

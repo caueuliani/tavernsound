@@ -33,6 +33,8 @@ describe('Socket and HTTP authentication integration (in-memory database double)
       create: jest.fn().mockResolvedValue({}),
     },
     roomMember: { findFirst: jest.fn().mockResolvedValue(null) },
+    scene: { findFirst: jest.fn().mockResolvedValue({ id: 'initial-ABC123' }) },
+    roomSceneAssignment: { findUnique: jest.fn().mockResolvedValue(null) },
     subscription: { findUnique: jest.fn().mockResolvedValue(null) },
     diceRoll: { findMany: jest.fn().mockResolvedValue([]) },
     event: { findMany: jest.fn().mockResolvedValue([]) },
