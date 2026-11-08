@@ -38,7 +38,9 @@ describe('Scene storage and permissions', () => {
       },
       roomMember: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
     };
-    gateway = { publishScene: jest.fn() };
+    gateway = { publishScene: jest.fn(),
+      requestSceneTransferPreflight: jest.fn().mockReturnValue({ requestId: 'c456c012-2b12-4c89-9e12-88442100f001', status: 'pending', expiresAt: Date.now() + 45_000 }),
+      sceneTransferPreflightStatus: jest.fn().mockReturnValue({ requestId: 'c456c012-2b12-4c89-9e12-88442100f001', status: 'accepted' }) };
     controller = new SceneController(prisma, { require: jest.fn(async () => ({ id: 'user-1' })) } as any, access, gateway);
   });
   afterEach(async () => {
@@ -185,6 +187,38 @@ describe('Scene storage and permissions', () => {
     expect(prisma.token.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { roomId: 'ABC123', sceneId: 'beach-123' },
     }));
+  });
+  it('preflights a staged destination only for an active member and never activates their scene', async () => {
+    room.ownerId = 'user-1';
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'beach-123', activeSceneId: null });
+    prisma.scene.findFirst.mockResolvedValue({ id: 'beach-123' });
+    const result = await controller.requestTransferPreflight('ABC123', 'player-1', req);
+    expect(result).toMatchObject({ status: 'pending', mode: 'preflight', activated: false });
+    expect(gateway.requestSceneTransferPreflight).toHaveBeenCalledWith('ABC123', 'player-1', 'beach-123');
+    expect(prisma.roomSceneAssignment.upsert).not.toHaveBeenCalled();
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+    const status = await controller.transferPreflightStatus('ABC123', result.requestId, req);
+    expect(status).toMatchObject({ status: 'accepted', activated: false });
+  });
+  it('rejects GM self-transfer, absent membership, absent staging, foreign scene and offline player', async () => {
+    room.ownerId = 'user-1';
+    await expect(controller.requestTransferPreflight('ABC123', 'user-1', req)).rejects.toThrow('mestre');
+    await expect(controller.requestTransferPreflight('ABC123', 'outsider', req)).rejects.toThrow('membro ativo');
+    prisma.roomMember.findFirst.mockResolvedValue({ id: 'member-1' });
+    await expect(controller.requestTransferPreflight('ABC123', 'player-1', req)).rejects.toThrow('Defina primeiro');
+    prisma.roomSceneAssignment.findUnique.mockResolvedValue({ sceneId: 'beach-123', activeSceneId: null });
+    await expect(controller.requestTransferPreflight('ABC123', 'player-1', req)).rejects.toThrow('não pertence');
+    prisma.scene.findFirst.mockResolvedValue({ id: 'beach-123' });
+    gateway.requestSceneTransferPreflight.mockReturnValue({ status: 'offline' });
+    await expect(controller.requestTransferPreflight('ABC123', 'player-1', req)).rejects.toThrow('conectado');
+    expect(prisma.room.updateMany).not.toHaveBeenCalled();
+  });
+  it('does not expose transfer status to non-GMs', async () => {
+    access.requireOwner.mockRejectedValue(new Error('Apenas mestre'));
+    await expect(controller.transferPreflightStatus('ABC123', 'c456c012-2b12-4c89-9e12-88442100f001', req))
+      .rejects.toThrow('Apenas mestre');
+    expect(gateway.sceneTransferPreflightStatus).not.toHaveBeenCalled();
   });
   it('keeps draft scenes isolated from the active VTT map', async () => {
     room.ownerId = 'user-1';
