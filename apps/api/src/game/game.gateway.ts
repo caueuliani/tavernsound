@@ -540,7 +540,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         modifier: r.modifier,
         timestamp: r.timestamp.getTime(),
       })),
-      chatHistory: chatEvents.reverse().map(e => {
+      // Legacy CHAT rows have no sceneId and belong to the initial scene.
+      // Never return chat from a different scene in a room-joined snapshot.
+      chatHistory: chatEvents.reverse().filter(e => {
+        const meta = e.metadata as any;
+        return (meta?.sceneId ?? activeScene.initialSceneId) === activeScene.sceneId;
+      }).map(e => {
         const meta = e.metadata as any;
         return {
           playerName: meta?.playerName ?? 'Jogador',
