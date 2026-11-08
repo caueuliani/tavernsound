@@ -15,11 +15,14 @@ describe('GameGateway regressions', () => {
     prisma = {
       subscription: { findUnique: jest.fn().mockResolvedValue(null) },
       room: { count: jest.fn().mockResolvedValue(0), create: jest.fn().mockResolvedValue({}), findUnique: jest.fn(), update: jest.fn().mockResolvedValue({}) },
-      token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}), findMany: jest.fn().mockResolvedValue([]) },
+      token: { create: jest.fn(), update: jest.fn().mockResolvedValue({}), findMany: jest.fn().mockResolvedValue([]),
+        findUnique: jest.fn().mockResolvedValue(null), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       scene: { findFirst: jest.fn().mockResolvedValue(null) },
+      roomSceneAssignment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       diceRoll: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn().mockResolvedValue({}) },
       event: { findMany: jest.fn().mockResolvedValue([]) },
     };
+    prisma.$transaction = jest.fn(async (callback: (tx: any) => Promise<any>) => callback(prisma));
     sessions = { require: jest.fn(), on: jest.fn(), voiceUid: jest.fn().mockReturnValue('allowed-uid') };
     access = { require: jest.fn(), activeSceneForUser: jest.fn().mockResolvedValue({ sceneId: 'initial-ABC123', initialSceneId: 'initial-ABC123' }) };
     gateway = new GameGateway(prisma, sessions, access, new TestSafetyService(prisma));
@@ -231,6 +234,88 @@ describe('GameGateway regressions', () => {
     });
     expect(gateway.sceneTransferPreflightStatus('ABC123', result.requestId!)).toBeNull();
     expect(gateway.verifiedSceneTransferPreflight('ABC123', 'player-1', 'beach-123', result.requestId!)).toBe(false);
+  });
+
+  it('requires matching authenticated scene and V2 media readiness before clearing activation timeout', async () => {
+    const { player } = prepareRoom();
+    (player as any).sceneTransportV2 = true;
+    (player as any).sceneId = 'initial-ABC123';
+    (player as any).userId = 'player-1';
+    client.connected = true;
+    const preflight = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    gateway.handleSceneTransferPreflightResponse({ requestId: preflight.requestId, accepted: true }, client);
+    gateway.finalizeSceneActivation('ABC123', 'player-1', preflight.requestId!, 'beach-123');
+    const awaiting = (gateway as any).pendingActivations;
+    expect(awaiting.size).toBe(1);
+    await gateway.handleSceneClientReady({ sceneId: 'beach-123' }, client);
+    expect(awaiting.size).toBe(1); // Old initial-scene socket cannot ACK.
+    (player as any).sceneId = 'beach-123';
+    await gateway.handleSceneClientReady({ sceneId: 'initial-ABC123' }, client);
+    expect(awaiting.size).toBe(1);
+    access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
+    await gateway.handleSceneClientReady({ sceneId: 'beach-123' }, client);
+    expect(awaiting.size).toBe(0);
+    expect(client.emit).toHaveBeenCalledWith('scene-activation-confirmed', { sceneId: 'beach-123' });
+  });
+
+  it('revokes other tabs for the same player during activation without disconnecting other players', () => {
+    const { player } = prepareRoom();
+    (player as any).sceneTransportV2 = true;
+    (player as any).sceneId = 'initial-ABC123';
+    (player as any).userId = 'player-1';
+    client.connected = true;
+    const extraTab = { id: 'other-tab', connected: true, emit: jest.fn(), disconnect: jest.fn() };
+    const otherPlayer = { id: 'unrelated', connected: true, emit: jest.fn(), disconnect: jest.fn() };
+    (gateway.server.sockets.sockets as Map<string, any>).set(extraTab.id, extraTab);
+    (gateway.server.sockets.sockets as Map<string, any>).set(otherPlayer.id, otherPlayer);
+    (gateway as any).players.set(extraTab.id, {
+      id: extraTab.id, roomId: 'ABC123', userId: 'player-1', sceneId: 'initial-ABC123',
+    });
+    (gateway as any).players.set(otherPlayer.id, {
+      id: otherPlayer.id, roomId: 'ABC123', userId: 'different-user', sceneId: 'initial-ABC123',
+    });
+    const preflight = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    gateway.handleSceneTransferPreflightResponse({ requestId: preflight.requestId, accepted: true }, client);
+    gateway.finalizeSceneActivation('ABC123', 'player-1', preflight.requestId!, 'beach-123');
+    expect(client.emit).toHaveBeenCalledWith('scene-activation-required',
+      { sceneId: 'beach-123', mode: 'reload-required' });
+    expect(extraTab.emit).toHaveBeenCalledWith('scene-recovery-required',
+      expect.objectContaining({ sceneId: 'beach-123' }));
+    expect(extraTab.disconnect).toHaveBeenCalledWith(true);
+    expect(otherPlayer.disconnect).not.toHaveBeenCalled();
+    (gateway as any).clearPendingActivation('ABC123', 'player-1');
+  });
+
+  it('rolls back both the active scene and player token when media readiness is never confirmed', async () => {
+    const { room, player } = prepareRoom();
+    (player as any).sceneTransportV2 = true;
+    (player as any).sceneId = 'initial-ABC123';
+    (player as any).userId = 'player-1';
+    client.connected = true;
+    const persistentId = createHash('sha256').update('ABC123:player-1').digest('hex');
+    room.tokens.push({ id: persistentId, sceneId: 'initial-ABC123', kind: 'PLAYER', playerId: client.id } as any);
+    const preflight = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    gateway.handleSceneTransferPreflightResponse({ requestId: preflight.requestId, accepted: true }, client);
+    gateway.finalizeSceneActivation('ABC123', 'player-1', preflight.requestId!, 'beach-123');
+    expect(room.tokens).toHaveLength(0);
+    prisma.token.findUnique.mockResolvedValue({
+      id: persistentId, roomId: 'ABC123', sceneId: 'initial-ABC123', kind: 'PLAYER',
+      x: 1, y: 2, color: '#ffffff', name: 'Player', sizeMultiplier: 1,
+    });
+    await (gateway as any).rollbackUnconfirmedActivation('ABC123', 'player-1', 'beach-123');
+    expect(prisma.roomSceneAssignment.updateMany).toHaveBeenCalledWith({
+      where: { roomId: 'ABC123', userId: 'player-1', activeSceneId: 'beach-123' },
+      data: { activeSceneId: null },
+    });
+    expect(prisma.token.updateMany).toHaveBeenCalledWith({
+      where: { id: persistentId, roomId: 'ABC123', sceneId: 'beach-123' },
+      data: { sceneId: 'initial-ABC123' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(room.tokens).toEqual([expect.objectContaining({ id: persistentId, sceneId: 'initial-ABC123' })]);
+    expect(client.disconnect).toHaveBeenCalledWith(true);
+    expect((gateway as any).pendingActivations.size).toBe(0);
   });
 
   it('does not accept another voice identity supplied by the client', () => {

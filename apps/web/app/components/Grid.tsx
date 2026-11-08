@@ -89,6 +89,9 @@ export default function Grid({ roomId }: GridProps) {
   // Disabled by default. All participants must use the same RTC mode until
   // the coordinated scene activation protocol is implemented.
   const [rtcSceneId, setRtcSceneId] = useState<string | null>(null)
+  const [snapshotReadySceneId, setSnapshotReadySceneId] = useState<string | null>(null)
+  const [mapImageReady, setMapImageReady] = useState(false)
+  const lastSceneReadyRef = useRef('')
   const [roomError, setRoomError] = useState('')
   const [ambientPreset, setAmbientPreset] = useState<AmbientPreset>('off')
   const [portraitError, setPortraitError] = useState('')
@@ -347,12 +350,37 @@ export default function Grid({ roomId }: GridProps) {
 
     socket.on('scene-recovery-required', (data: { message?: string }) => {
       setRoomError(data.message || 'O mestre restaurou sua Cena inicial. Atualize a página para reconectar.')
+      if (process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF === 'true') window.location.reload()
     })
+
+    socket.on('scene-activation-required', (data: { sceneId?: string; mode?: string }) => {
+      if (process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF !== 'true' || typeof data?.sceneId !== 'string') return
+      // Reload tears down existing audio/video capture, Socket.IO and Pixi.
+      // A fresh authenticated join then uses activeSceneId from Neon.
+      window.location.reload()
+    })
+
+    socket.on('scene-activation-confirmed', (data: { sceneId?: string }) => {
+      if (data.sceneId && data.sceneId === lastSceneReadyRef.current) {
+        setRoomError('')
+      }
+    })
+
+
 
     socket.on('connect_error', () => setRoomError('Não foi possível conectar. Faça login novamente ou verifique o servidor.'))
     socket.on('room-error', (data: { message: string }) => { creatingTokenRef.current = false; setRoomError(data.message) })
 
     socket.on('room-joined', (data: any) => {
+      lastSceneReadyRef.current = ''
+      setSnapshotReadySceneId(null)
+      setMapImageReady(false)
+      if (process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF === 'true') {
+        setScene(null)
+        setMapData(null)
+        fogDataRef.current = new Array(GRID_CELLS * GRID_CELLS).fill(false)
+        fogCellsRef.current.forEach(cell => { cell.visible = true })
+      }
       setRtcSceneId(typeof data.sceneId === 'string' ? data.sceneId : null)
       setAmbientPreset(data.ambientPreset ?? 'off')
       setTestMode(data.testMode !== false)
@@ -846,6 +874,7 @@ export default function Grid({ roomId }: GridProps) {
         // displaying a legacy image when the new scene has no map.
         setMapData(null)
         setScene(snapshot.scene as Scene)
+        setSnapshotReadySceneId(snapshot.sceneId)
         // Fail closed: missing/short fog must never inherit the previous
         // scene's revealed cells.
         const fog = Array.isArray(snapshot.fogData) && snapshot.fogData.length === GRID_CELLS * GRID_CELLS
@@ -880,6 +909,7 @@ export default function Grid({ roomId }: GridProps) {
       mapSpriteRef.current = null
     }
 
+    setMapImageReady(!source)
     if (source) {
       const img = new Image()
       img.onload = () => {
@@ -892,8 +922,9 @@ export default function Grid({ roomId }: GridProps) {
         sprite.position.set(current.x, current.y)
         mapContainer.addChild(sprite)
         mapSpriteRef.current = sprite
+        setMapImageReady(true)
       }
-      img.onerror = () => { if (!cancelled) setRoomError('Não foi possível carregar a imagem do mapa. Recarregue o cenário.') }
+      img.onerror = () => { if (!cancelled) { setMapImageReady(false); setRoomError('Não foi possível carregar a imagem do mapa. Recarregue o cenário.') } }
       img.src = source
     }
 
@@ -930,6 +961,18 @@ export default function Grid({ roomId }: GridProps) {
       token.graphics.position.set((token.x + gridStep(scene.settings.gridSize) / 2) * CELL_SIZE, (token.y + gridStep(scene.settings.gridSize) / 2) * CELL_SIZE)
     }
   }, [canvasReady, scene?.settings])
+
+  // ACK only after the authorized snapshot, rendered map and signed RTC
+  // microphone channel are all ready. A webcam is intentionally opt-in again
+  // after the browser reload; never silently re-enable it.
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_SCENE_RTC_HANDOFF !== 'true' || !connected ||
+        !audioConnected || !mapImageReady || !rtcSceneId ||
+        snapshotReadySceneId !== rtcSceneId || !socketRef.current?.connected ||
+        lastSceneReadyRef.current === rtcSceneId) return
+    lastSceneReadyRef.current = rtcSceneId
+    socketRef.current.emit('scene-client-ready', { sceneId: rtcSceneId })
+  }, [connected, audioConnected, mapImageReady, rtcSceneId, snapshotReadySceneId])
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
