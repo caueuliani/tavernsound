@@ -258,6 +258,34 @@ describe('GameGateway regressions', () => {
     expect(client.emit).toHaveBeenCalledWith('scene-activation-confirmed', { sceneId: 'beach-123' });
   });
 
+  it('revokes other tabs for the same player during activation without disconnecting other players', () => {
+    const { player } = prepareRoom();
+    (player as any).sceneTransportV2 = true;
+    (player as any).sceneId = 'initial-ABC123';
+    (player as any).userId = 'player-1';
+    client.connected = true;
+    const extraTab = { id: 'other-tab', connected: true, emit: jest.fn(), disconnect: jest.fn() };
+    const otherPlayer = { id: 'unrelated', connected: true, emit: jest.fn(), disconnect: jest.fn() };
+    (gateway.server.sockets.sockets as Map<string, any>).set(extraTab.id, extraTab);
+    (gateway.server.sockets.sockets as Map<string, any>).set(otherPlayer.id, otherPlayer);
+    (gateway as any).players.set(extraTab.id, {
+      id: extraTab.id, roomId: 'ABC123', userId: 'player-1', sceneId: 'initial-ABC123',
+    });
+    (gateway as any).players.set(otherPlayer.id, {
+      id: otherPlayer.id, roomId: 'ABC123', userId: 'different-user', sceneId: 'initial-ABC123',
+    });
+    const preflight = gateway.requestSceneTransferPreflight('ABC123', 'player-1', 'beach-123');
+    gateway.handleSceneTransferPreflightResponse({ requestId: preflight.requestId, accepted: true }, client);
+    gateway.finalizeSceneActivation('ABC123', 'player-1', preflight.requestId!, 'beach-123');
+    expect(client.emit).toHaveBeenCalledWith('scene-activation-required',
+      { sceneId: 'beach-123', mode: 'reload-required' });
+    expect(extraTab.emit).toHaveBeenCalledWith('scene-recovery-required',
+      expect.objectContaining({ sceneId: 'beach-123' }));
+    expect(extraTab.disconnect).toHaveBeenCalledWith(true);
+    expect(otherPlayer.disconnect).not.toHaveBeenCalled();
+    (gateway as any).clearPendingActivation('ABC123', 'player-1');
+  });
+
   it('rolls back both the active scene and player token when media readiness is never confirmed', async () => {
     const { room, player } = prepareRoom();
     (player as any).sceneTransportV2 = true;
