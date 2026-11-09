@@ -1025,7 +1025,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!room) return;
 
     const token = player.isHost
-      ? room.tokens.find(t => t.id === data.tokenId && t.kind === 'SCENERY')
+      ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id)
       : player.tokens.find(t => t.id === data.tokenId && t.kind === 'PLAYER' && t.sceneId === player.sceneId);
     if (!token) return;
 
