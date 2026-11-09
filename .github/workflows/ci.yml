@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   test-build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, tavernsound-ci]
+    # Never run untrusted fork pull requests on a personal self-hosted runner.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 25
     env:
       CI: "true"
@@ -27,7 +29,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
