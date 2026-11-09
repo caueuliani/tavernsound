@@ -42,7 +42,7 @@ export class SceneryTokenController {
     }
     const maxHp = body.maxHp === undefined ? 10 : body.maxHp;
     const hp = body.hp === undefined ? maxHp : body.hp;
-    if (!Number.isInteger(hp) || !Number.isInteger(maxHp) || maxHp < 1 || maxHp > 1_000_000 || hp < 0 || hp > maxHp) {
+    if (typeof hp !== 'number' || typeof maxHp !== 'number' || !Number.isInteger(hp) || !Number.isInteger(maxHp) || maxHp < 1 || maxHp > 1_000_000 || hp < 0 || hp > maxHp) {
       throw new BadRequestException('HP do token inválido.');
     }
     const id = randomUUID();
@@ -71,19 +71,19 @@ export class SceneryTokenController {
     if (!token) throw new NotFoundException('NPC não encontrado nesta cena.');
     const hp = body.hp === undefined ? token.hp ?? 10 : body.hp;
     const maxHp = body.maxHp === undefined ? token.maxHp ?? 10 : body.maxHp;
-    if (!Number.isInteger(hp) || !Number.isInteger(maxHp) || maxHp < 1 || maxHp > 1_000_000 || hp < 0 || hp > maxHp) {
+    if (typeof hp !== 'number' || typeof maxHp !== 'number' || !Number.isInteger(hp) || !Number.isInteger(maxHp) || maxHp < 1 || maxHp > 1_000_000 || hp < 0 || hp > maxHp) {
       throw new BadRequestException('HP do token inválido.');
     }
     const coordinates = body.x !== undefined || body.y !== undefined;
     const x = body.x === undefined ? token.positionX ?? token.x : body.x;
     const y = body.y === undefined ? token.positionY ?? token.y : body.y;
     const size = scene.geometry.settings.gridSize;
-    if (coordinates && (typeof x !== 'number' || typeof y !== 'number' ||
-        !isTokenGridCoordinate(x, size) || !isTokenGridCoordinate(y, size) ||
+    if (typeof x !== 'number' || typeof y !== 'number' ||
+        (coordinates && (!isTokenGridCoordinate(x, size) || !isTokenGridCoordinate(y, size) ||
         !validTokenMove(
           tokenCenter(token.positionX ?? token.x, token.positionY ?? token.y, size),
           tokenCenter(x, y, size), token.sizeMultiplier ?? 1, size, movementSegments(scene.geometry.walls),
-        ))) {
+        )))) {
       throw new BadRequestException('Movimento inválido ou atravessa uma parede.');
     }
     const result = await this.prisma.token.updateMany({
