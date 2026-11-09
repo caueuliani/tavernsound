@@ -134,6 +134,7 @@ describe('GameGateway regressions', () => {
     player.isHost = false;
     (player as any).sceneId = 'beach-123';
     (player as any).userId = 'player-1';
+    access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
     const state = { tokens: [] as any[], walls: [], gridSize: 10 };
     (gateway as any).alternateScenes.set('ABC123:beach-123', state);
     await gateway.handleCreateToken({ x: 2, y: 3, color: 0xff9d00, tokenId: 'ignored' }, client);
