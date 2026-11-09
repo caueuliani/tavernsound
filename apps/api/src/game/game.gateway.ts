@@ -182,6 +182,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (state && !state.tokens.some(t => t.id === token.id)) state.tokens.push(token);
     this.server.to(sceneSocketRoom(roomId, sceneId)).emit('token-created', token);
   }
+  publishAlternateTokenMoved(roomId: string, sceneId: string, tokenId: string, x: number, y: number) {
+    const state = this.alternateScenes.get(this.alternateKey(roomId, sceneId));
+    const token = state?.tokens.find(t => t.id === tokenId);
+    if (token) { token.x = x; token.y = y; }
+    this.server.to(sceneSocketRoom(roomId, sceneId)).emit('token-moved', { tokenId, x, y, playerId: tokenId });
+  }
   publishAlternateTokenDeleted(roomId: string, sceneId: string, tokenId: string) {
     const state = this.alternateScenes.get(this.alternateKey(roomId, sceneId));
     if (state) state.tokens = state.tokens.filter(t => t.id !== tokenId);
