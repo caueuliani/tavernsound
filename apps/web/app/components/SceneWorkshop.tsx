@@ -15,6 +15,10 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
   const [busy, setBusy] = useState(false)
   const [players, setPlayers] = useState<{ userId: string; nickname: string; sceneId: string | null; activeSceneId?: string | null }[]>([])
   const [assignmentsLoading, setAssignmentsLoading] = useState(false)
+  const [sceneNpcs, setSceneNpcs] = useState<Array<{ id: string; playerName?: string; hp?: number; maxHp?: number; x: number; y: number }>>([])
+  const [npcName, setNpcName] = useState('NPC')
+  const [npcX, setNpcX] = useState('1')
+  const [npcY, setNpcY] = useState('1')
   const [preflight, setPreflight] = useState<Record<string, { requestId?: string; status: string }>>({})
   useEffect(() => {
     let disposed = false
@@ -38,6 +42,61 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
       .finally(() => { if (!cancelled) setAssignmentsLoading(false) })
     return () => { cancelled = true }
   }, [roomId, allowed, host])
+  const initialScene = scenes[0]?.id ?? ''
+  const npcScene = host && !!sceneId && !!initialScene && sceneId !== initialScene
+  const loadNpcs = async (id: string) => {
+    const response = await fetch(apiUrl(`/rooms/${roomId}/scene/snapshot?sceneId=${encodeURIComponent(id)}`), {
+      credentials: 'include', cache: 'no-store',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.message || 'Não foi possível carregar NPCs da cena.')
+    setSceneNpcs((data.tokens || []).filter((token: { kind: string }) => token.kind === 'SCENERY'))
+  }
+  useEffect(() => {
+    if (!npcScene) { setSceneNpcs([]); return }
+    let cancelled = false
+    fetch(apiUrl(`/rooms/${roomId}/scene/snapshot?sceneId=${encodeURIComponent(sceneId)}`), {
+      credentials: 'include', cache: 'no-store',
+    }).then(async response => {
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Não foi possível carregar NPCs.')
+      if (!cancelled) setSceneNpcs((data.tokens || []).filter((token: { kind: string }) => token.kind === 'SCENERY'))
+    }).catch(error => { if (!cancelled) setError((error as Error).message) })
+    return () => { cancelled = true }
+  }, [roomId, sceneId, npcScene])
+  const npcRequest = async (method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: object) => {
+    if (busy || !npcScene) return
+    setBusy(true); setError('')
+    try {
+      const response = await fetch(apiUrl(path), {
+        method, credentials: 'include', cache: 'no-store',
+        ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Não foi possível modificar o NPC.')
+      await loadNpcs(sceneId)
+    } catch (error) { setError((error as Error).message) }
+    finally { setBusy(false) }
+  }
+  const createNpc = () => void npcRequest('POST',
+    `/rooms/${roomId}/tokens/scenes/${encodeURIComponent(sceneId)}/scenery`, {
+      name: npcName, x: Number(npcX), y: Number(npcY),
+    })
+  const editNpc = (npc: { id: string; hp?: number; maxHp?: number; x: number; y: number }) => {
+    const hpInput = prompt('HP atual do NPC:', String(npc.hp ?? 10))
+    if (hpInput === null) return
+    const maxInput = prompt('HP máximo:', String(npc.maxHp ?? 10))
+    if (maxInput === null) return
+    const xInput = prompt('Coordenada X (grade da cena):', String(npc.x))
+    if (xInput === null) return
+    const yInput = prompt('Coordenada Y (grade da cena):', String(npc.y))
+    if (yInput === null) return
+    void npcRequest('PATCH',
+      `/rooms/${roomId}/tokens/scenes/${encodeURIComponent(sceneId)}/scenery/${encodeURIComponent(npc.id)}`, {
+        hp: Number(hpInput), maxHp: Number(maxInput), x: Number(xInput), y: Number(yInput),
+      })
+  }
+
   const stageAssignment = async (userId: string, nextSceneId: string) => {
     if (busy) return
     setBusy(true); setError('')
@@ -191,6 +250,25 @@ export default function SceneWorkshop({ roomId }: { roomId: string }) {
             {({ pending: 'Aguardando jogador', accepted: 'Conexão confirmada; transferência NÃO ativada',
               rejected: 'Jogador recusou', expired: 'Verificação expirada' } as Record<string, string>)[preflight[player.userId].status] ?? 'Verificação indisponível'}
           </span>}
+        </div>)}
+      </section>}
+      {npcScene && <section aria-label="NPCs da cena alternativa" style={{ marginBottom: 20, padding: 14, border: '1px solid #79552c', borderRadius: 8 }}>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>⚔️ Tokens e NPCs desta cena</h2>
+        <p style={{ fontSize: 13 }}>Crie e administre NPCs apenas no mapa selecionado. Jogadores transferidos podem movimentar seu próprio token e editar seu HP pela mesa.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end' }}>
+          <label>Nome <input aria-label="Nome do NPC" value={npcName} onChange={event => setNpcName(event.target.value)} maxLength={64} /></label>
+          <label>X <input aria-label="X do NPC" type="number" step="0.5" min="0" max="10" value={npcX} onChange={event => setNpcX(event.target.value)} style={{ width: 72 }} /></label>
+          <label>Y <input aria-label="Y do NPC" type="number" step="0.5" min="0" max="10" value={npcY} onChange={event => setNpcY(event.target.value)} style={{ width: 72 }} /></label>
+          <button type="button" disabled={busy || !npcName.trim()} onClick={createNpc}>Criar NPC</button>
+          <button type="button" disabled={busy} onClick={() => void loadNpcs(sceneId).catch(error => setError(error.message))}>Atualizar</button>
+        </div>
+        {sceneNpcs.map(npc => <div key={npc.id} style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8 }}>
+          <span style={{ flex: 1 }}>{npc.playerName || 'NPC'} · ({npc.x}, {npc.y}) · HP {npc.hp ?? 10}/{npc.maxHp ?? 10}</span>
+          <button type="button" disabled={busy} onClick={() => editNpc(npc)}>Editar posição/HP</button>
+          <button type="button" disabled={busy} onClick={() => {
+            if (window.confirm('Excluir este NPC apenas desta cena?')) void npcRequest('DELETE',
+              `/rooms/${roomId}/tokens/scenes/${encodeURIComponent(sceneId)}/scenery/${encodeURIComponent(npc.id)}`)
+          }}>Excluir</button>
         </div>)}
       </section>}
       {error && <p role="alert">{error} <a href="/login" style={{ color: '#ffc568' }}>Entrar</a></p>}
