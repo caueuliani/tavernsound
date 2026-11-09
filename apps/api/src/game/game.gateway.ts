@@ -951,6 +951,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
+    // A socket's scene is not authority after a concurrent GM recovery.
+    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
+      try {
+        const active = await this.access.activeSceneForUser(player.roomId, player.userId!);
+        if (active.sceneId !== player.sceneId) return;
+      } catch { return; }
+    }
     const room = this.sceneState(player);
     if (!room) return;
 
@@ -1196,7 +1203,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!Number.isInteger(data.hp) || !Number.isInteger(data.maxHp) || data.maxHp < 1 || data.maxHp > 1_000_000 || data.hp < 0 || data.hp > data.maxHp) return;
 
     const token = room.tokens.find(t => t.id === data.tokenId);
-    if (!token || token.sceneId !== (player.sceneId ?? `initial-${player.roomId}`)) return;
+    if (!token || (token.sceneId ?? `initial-${player.roomId}`) !== (player.sceneId ?? `initial-${player.roomId}`)) return;
     const alternative = player.sceneId !== `initial-${player.roomId}`;
     if (alternative) {
       try {
