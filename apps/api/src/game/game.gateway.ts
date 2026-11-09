@@ -1044,7 +1044,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     // The active scene and persisted token must still match before any
     // movement is broadcast. Do not mutate the in-memory view on DB failure.
-    const alternative = player.sceneId !== `initial-${player.roomId}`;
+    const alternative = !!player.sceneId && player.sceneId !== `initial-${player.roomId}`;
     if (alternative) {
       try {
         const active = await this.access.activeSceneForUser(player.roomId, player.userId!);
@@ -1210,7 +1210,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     const token = room.tokens.find(t => t.id === data.tokenId);
     if (!token || (token.sceneId ?? `initial-${player.roomId}`) !== (player.sceneId ?? `initial-${player.roomId}`)) return;
-    const alternative = player.sceneId !== `initial-${player.roomId}`;
+    const alternative = !!player.sceneId && player.sceneId !== `initial-${player.roomId}`;
     if (alternative) {
       try {
         const active = await this.access.activeSceneForUser(player.roomId, player.userId!);
