@@ -129,6 +129,71 @@ describe('GameGateway regressions', () => {
     }
   });
 
+  it('creates a player token in their authorized alternative scene, not the initial room', async () => {
+    const { player, room } = prepareRoom();
+    player.isHost = false;
+    (player as any).sceneId = 'beach-123';
+    (player as any).userId = 'player-1';
+    const state = { tokens: [] as any[], walls: [], gridSize: 10 };
+    (gateway as any).alternateScenes.set('ABC123:beach-123', state);
+    await gateway.handleCreateToken({ x: 2, y: 3, color: 0xff9d00, tokenId: 'ignored' }, client);
+    expect(prisma.token.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      roomId: 'ABC123', sceneId: 'beach-123', kind: 'PLAYER',
+    }) });
+    expect(state.tokens).toHaveLength(1);
+    expect(room.tokens).toHaveLength(0);
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'beach-123'));
+  });
+
+  it('moves and persists only an owned token in its scene; rejects stale assignment', async () => {
+    const { player, room } = prepareRoom();
+    player.isHost = false;
+    (player as any).sceneId = 'beach-123';
+    (player as any).userId = 'player-1';
+    const token = { id: 'beach-player', kind: 'PLAYER', sceneId: 'beach-123',
+      playerId: client.id, x: 2, y: 3, size: 1, color: 0xff9d00 };
+    player.tokens.push(token as any);
+    (gateway as any).alternateScenes.set('ABC123:beach-123', { tokens: [token], walls: [], gridSize: 10 });
+    access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
+    await gateway.handleMoveToken({ tokenId: 'beach-player', x: 3, y: 3 }, client);
+    expect(prisma.token.updateMany).toHaveBeenCalledWith({
+      where: { id: 'beach-player', roomId: 'ABC123', sceneId: 'beach-123' },
+      data: { x: 3, y: 3, positionX: 3, positionY: 3 },
+    });
+    expect(client.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'beach-123'));
+    expect(room.tokens).toHaveLength(0);
+    prisma.token.updateMany.mockClear();
+    client.to.mockClear();
+    access.activeSceneForUser.mockResolvedValue({ sceneId: 'initial-ABC123', initialSceneId: 'initial-ABC123' });
+    await gateway.handleMoveToken({ tokenId: 'beach-player', x: 4, y: 3 }, client);
+    expect(prisma.token.updateMany).not.toHaveBeenCalled();
+    expect(client.to).not.toHaveBeenCalled();
+    expect(token.x).toBe(3);
+  });
+
+  it('persists HP of an authorized alternative token without broadcasting into the initial scene', async () => {
+    const { player } = prepareRoom();
+    player.isHost = false;
+    (player as any).sceneId = 'beach-123';
+    (player as any).userId = 'player-1';
+    const token = { id: 'beach-player', kind: 'PLAYER', sceneId: 'beach-123',
+      playerId: client.id, x: 2, y: 3, size: 1, color: 0xff9d00, hp: 10, maxHp: 10 };
+    player.tokens.push(token as any);
+    (gateway as any).alternateScenes.set('ABC123:beach-123', { tokens: [token], walls: [], gridSize: 10 });
+    access.activeSceneForUser.mockResolvedValue({ sceneId: 'beach-123', initialSceneId: 'initial-ABC123' });
+    await gateway.handleUpdateTokenHp({ tokenId: 'beach-player', hp: 7, maxHp: 10 }, client);
+    expect(prisma.token.updateMany).toHaveBeenCalledWith({
+      where: { id: 'beach-player', roomId: 'ABC123', sceneId: 'beach-123' },
+      data: { hp: 7, maxHp: 10 },
+    });
+    expect(gateway.server.to).toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'beach-123'));
+    expect(gateway.server.to).not.toHaveBeenCalledWith(sceneSocketRoom('ABC123', 'initial-ABC123'));
+    expect(token.hp).toBe(7);
+    prisma.token.updateMany.mockResolvedValueOnce({ count: 0 });
+    await gateway.handleUpdateTokenHp({ tokenId: 'beach-player', hp: 5, maxHp: 10 }, client);
+    expect(token.hp).toBe(7);
+  });
+
   it('fails closed if the activated destination is missing from this room', async () => {
     const old = process.env.SCENE_SCOPED_ADMISSION;
     try {
