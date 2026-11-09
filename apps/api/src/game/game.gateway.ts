@@ -487,8 +487,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
         // Remove tokens da memória, mas NÃO do banco — o estado do mapa persiste
         const tokenIds = player.tokens.map(t => t.id);
-        room.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
-        client.to(this.initialTransport(player.roomId)).emit('remove-player-tokens', {
+        const activeState = this.sceneState(player);
+        activeState?.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
+        client.to(this.playerTransport(player)).emit('remove-player-tokens', {
           playerId: client.id,
           tokenIds,
         });
@@ -498,7 +499,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         });
 
         if (room.players.size === 0) {
-          if (player.roomId) this.rooms.delete(player.roomId);
+          if (player.roomId) {
+            this.rooms.delete(player.roomId);
+            for (const key of this.alternateScenes.keys()) {
+              if (key.startsWith(`${player.roomId}:`)) this.alternateScenes.delete(key);
+            }
+          }
           console.log(`💤 Sala ${player.roomId ?? 'desconhecida'} removida da memória`);
         }
       }
