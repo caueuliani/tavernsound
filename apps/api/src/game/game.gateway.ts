@@ -682,10 +682,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       client.emit('room-error', { message: 'Cena ativa indisponível. Peça ao mestre para restaurar a Cena inicial.' });
       return;
     }
-    // Always refresh the alternative scene from persisted state on join;
-    // the legacy Room cache must never become its source of truth.
+    // One shared scene cache for simultaneously connected players. Do not
+    // replace token objects already held by their owning sockets on rejoin.
     const alternativeState = alternative
-      ? await this.refreshAlternateScene(data.roomId, activeScene.sceneId)
+      ? this.alternateScenes.get(this.alternateKey(data.roomId, activeScene.sceneId)) ??
+        await this.refreshAlternateScene(data.roomId, activeScene.sceneId)
       : null;
     if (alternative && !alternativeState) {
       client.emit('room-error', { message: 'Estado da cena ativa indisponível.' });
