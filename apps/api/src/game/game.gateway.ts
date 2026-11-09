@@ -139,6 +139,67 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
   private players: Map<string, PlayerData> = new Map();
   private rooms: Map<string, RoomData> = new Map();
+  // Alternative scenes are cached separately from the legacy Room state.
+  // No alternate token or geometry is ever inserted in Room.tokens.
+  private readonly alternateScenes = new Map<string, {
+    tokens: TokenData[]; walls: SceneWall[]; gridSize: number;
+  }>();
+  private alternateKey(roomId: string, sceneId: string) { return `${roomId}:${sceneId}`; }
+  private sceneState(player: PlayerData) {
+    if (!player.roomId) return null;
+    const room = this.rooms.get(player.roomId);
+    if (!room) return null;
+    const sceneId = player.sceneId ?? `initial-${player.roomId}`;
+    if (sceneId === `initial-${player.roomId}`) return room;
+    return this.alternateScenes.get(this.alternateKey(player.roomId, sceneId)) ?? null;
+  }
+  private async refreshAlternateScene(roomId: string, sceneId: string) {
+    const [stored, rows] = await Promise.all([
+      this.prisma.scene.findFirst({
+        where: { roomId, id: sceneId },
+        select: { sceneData: true },
+      }),
+      this.prisma.token.findMany({ where: { roomId, sceneId } }),
+    ]);
+    if (!stored) return null;
+    const geometry = readScene(stored.sceneData);
+    const tokens: TokenData[] = rows.map(t => ({
+      id: t.id, sceneId, kind: t.kind,
+      x: t.positionX ?? t.x, y: t.positionY ?? t.y,
+      color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
+      playerId: t.id, playerName: t.name,
+      hp: t.hp ?? undefined, maxHp: t.maxHp ?? undefined,
+      imageUrl: t.imageUrl ?? undefined, size: tokenSize(t.sizeMultiplier),
+    }));
+    const state = { tokens, walls: geometry.walls, gridSize: geometry.settings.gridSize };
+    this.alternateScenes.set(this.alternateKey(roomId, sceneId), state);
+    return state;
+  }
+
+  // Used by authenticated GM scene-token routes after a database write.
+  publishAlternateTokenCreated(roomId: string, sceneId: string, token: TokenData) {
+    const state = this.alternateScenes.get(this.alternateKey(roomId, sceneId));
+    if (state && !state.tokens.some(t => t.id === token.id)) state.tokens.push(token);
+    this.server.to(sceneSocketRoom(roomId, sceneId)).emit('token-created', token);
+  }
+  publishAlternateTokenMoved(roomId: string, sceneId: string, tokenId: string, x: number, y: number) {
+    const state = this.alternateScenes.get(this.alternateKey(roomId, sceneId));
+    const token = state?.tokens.find(t => t.id === tokenId);
+    if (token) { token.x = x; token.y = y; }
+    this.server.to(sceneSocketRoom(roomId, sceneId)).emit('token-moved', { tokenId, x, y, playerId: tokenId });
+  }
+  publishAlternateTokenDeleted(roomId: string, sceneId: string, tokenId: string) {
+    const state = this.alternateScenes.get(this.alternateKey(roomId, sceneId));
+    if (state) state.tokens = state.tokens.filter(t => t.id !== tokenId);
+    this.server.to(sceneSocketRoom(roomId, sceneId)).emit('token-deleted', { tokenId });
+  }
+  publishAlternateTokenHp(roomId: string, sceneId: string, tokenId: string, hp: number, maxHp: number) {
+    const state = this.alternateScenes.get(this.alternateKey(roomId, sceneId));
+    const token = state?.tokens.find(t => t.id === tokenId);
+    if (token) { token.hp = hp; token.maxHp = maxHp; }
+    this.server.to(sceneSocketRoom(roomId, sceneId)).emit('token-hp-updated', { tokenId, hp, maxHp });
+  }
+
   private readonly transferPreflights = new Map<string, {
     roomId: string; userId: string; socketId: string; sceneId: string;
     expiresAt: number; status: 'pending' | 'accepted' | 'rejected';
@@ -426,8 +487,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
         // Remove tokens da memória, mas NÃO do banco — o estado do mapa persiste
         const tokenIds = player.tokens.map(t => t.id);
-        room.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
-        client.to(this.initialTransport(player.roomId)).emit('remove-player-tokens', {
+        const activeState = this.sceneState(player);
+        activeState?.tokens.forEach(t => { if (t.playerId === client.id) t.playerId = t.id; });
+        client.to(this.playerTransport(player)).emit('remove-player-tokens', {
           playerId: client.id,
           tokenIds,
         });
@@ -437,7 +499,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         });
 
         if (room.players.size === 0) {
-          if (player.roomId) this.rooms.delete(player.roomId);
+          if (player.roomId) {
+            this.rooms.delete(player.roomId);
+            for (const key of this.alternateScenes.keys()) {
+              if (key.startsWith(`${player.roomId}:`)) this.alternateScenes.delete(key);
+            }
+          }
           console.log(`💤 Sala ${player.roomId ?? 'desconhecida'} removida da memória`);
         }
       }
@@ -627,19 +694,17 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       client.emit('room-error', { message: 'Cena ativa indisponível. Peça ao mestre para restaurar a Cena inicial.' });
       return;
     }
-    const sceneTokens: TokenData[] = alternative
-      ? (await this.prisma.token.findMany({
-          where: { roomId: data.roomId, sceneId: activeScene.sceneId },
-        })).map(t => ({
-          id: t.id, sceneId: activeScene.sceneId, kind: t.kind,
-          x: t.positionX ?? t.x, y: t.positionY ?? t.y,
-          color: parseInt((t.color || '#ff9d00').replace('#', ''), 16),
-          playerId: t.id,
-          playerName: t.kind === 'SCENERY' ? sceneryNameOrFallback(t.name) : t.name,
-          hp: t.hp ?? undefined, maxHp: t.maxHp ?? undefined,
-          imageUrl: t.imageUrl ?? undefined, size: tokenSize(t.sizeMultiplier),
-        }))
-      : room.tokens;
+    // One shared scene cache for simultaneously connected players. Do not
+    // replace token objects already held by their owning sockets on rejoin.
+    const alternativeState = alternative
+      ? this.alternateScenes.get(this.alternateKey(data.roomId, activeScene.sceneId)) ??
+        await this.refreshAlternateScene(data.roomId, activeScene.sceneId)
+      : null;
+    if (alternative && !alternativeState) {
+      client.emit('room-error', { message: 'Estado da cena ativa indisponível.' });
+      return;
+    }
+    const sceneTokens = alternative ? alternativeState!.tokens : room.tokens;
     const sceneGeometry = alternative ? readScene(alternativeScene!.sceneData) : null;
 
     let playerName: string;
@@ -892,20 +957,20 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
-    // Alternative scene gameplay mutation requires the per-scene rules engine.
-    // Until then, entry is read-only to avoid writing to initial-scene tokens.
+    // A socket's scene is not authority after a concurrent GM recovery.
     if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
-      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
-      return;
+      try {
+        const active = await this.access.activeSceneForUser(player.roomId, player.userId!);
+        if (active.sceneId !== player.sceneId) return;
+      } catch { return; }
     }
-
-    const room = this.rooms.get(player.roomId);
+    const room = this.sceneState(player);
     if (!room) return;
 
     const id = player.isHost ? randomUUID() : createHash('sha256').update(`${player.roomId}:${player.userId}`).digest('hex');
     const token: TokenData = {
       id,
-      sceneId: `initial-${player.roomId}`,
+      sceneId: player.sceneId ?? `initial-${player.roomId}`,
       kind: player.isHost ? 'SCENERY' : 'PLAYER',
       x: data.x,
       y: data.y,
@@ -956,25 +1021,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   }
 
   @SubscribeMessage('move-token')
-  handleMoveToken(
+  async handleMoveToken(
     @MessageBody() data: { tokenId: string; x: number; y: number },
     @ConnectedSocket() client: Socket,
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
-    // Alternative token editing will be enabled only after scene-aware
-    // ownership, persistence and movement validation are fully coordinated.
-    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
-      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
-      return;
-    }
-
-    const room = this.rooms.get(player.roomId);
+    const room = this.sceneState(player);
     if (!room) return;
 
     const token = player.isHost
       ? room.tokens.find(t => t.id === data.tokenId && t.playerId === t.id)
-      : player.tokens.find(t => t.id === data.tokenId && t.kind === 'PLAYER');
+      : player.tokens.find(t => t.id === data.tokenId && t.kind === 'PLAYER' && t.sceneId === player.sceneId);
     if (!token) return;
 
     const segments = movementSegments(room.walls ?? []);
@@ -982,6 +1040,24 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       !validTokenMove(tokenCenter(token.x, token.y, room.gridSize ?? 10), tokenCenter(data.x, data.y, room.gridSize ?? 10), token.size, room.gridSize ?? 10, segments)) {
       client.emit('token-moved', { tokenId: token.id, x: token.x, y: token.y, playerId: token.playerId });
       return;
+    }
+
+    // The active scene and persisted token must still match before any
+    // movement is broadcast. Do not mutate the in-memory view on DB failure.
+    const alternative = !!player.sceneId && player.sceneId !== `initial-${player.roomId}`;
+    if (alternative) {
+      try {
+        const active = await this.access.activeSceneForUser(player.roomId, player.userId!);
+        if (active.sceneId !== player.sceneId) return;
+        const result = await this.prisma.token.updateMany({
+          where: { id: data.tokenId, roomId: player.roomId, sceneId: player.sceneId },
+          data: { x: Math.floor(data.x), y: Math.floor(data.y), positionX: data.x, positionY: data.y },
+        });
+        if (result.count !== 1) return;
+      } catch {
+        client.emit('room-error', { message: 'Não foi possível salvar o movimento nesta cena.' });
+        return;
+      }
     }
 
     token.x = data.x;
@@ -1003,9 +1079,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       playerId: token.playerId,
     });
 
-    this.prisma.token
-      .update({ where: { id: data.tokenId }, data: { x: Math.floor(data.x), y: Math.floor(data.y), positionX: data.x, positionY: data.y } })
-      .catch(() => {});
+    if (!alternative) {
+      this.prisma.token
+        .update({ where: { id: data.tokenId }, data: { x: Math.floor(data.x), y: Math.floor(data.y), positionX: data.x, positionY: data.y } })
+        .catch(() => {});
+    }
   }
 
   @SubscribeMessage('set-ambient-preset')
@@ -1117,27 +1195,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   }
 
   @SubscribeMessage('update-token-hp')
-  handleUpdateTokenHp(
+  async handleUpdateTokenHp(
     @MessageBody() data: { tokenId: string; hp: number; maxHp: number },
     @ConnectedSocket() client: Socket,
   ) {
     const player = this.players.get(client.id);
     if (!player || !player.roomId) return;
-    // Alternative token editing will be enabled only after scene-aware
-    // ownership, persistence and movement validation are fully coordinated.
-    if (player.sceneId && player.sceneId !== `initial-${player.roomId}`) {
-      client.emit('room-error', { message: 'Tokens nesta cena ainda estão em modo somente leitura.' });
-      return;
-    }
-
-    const room = this.rooms.get(player.roomId);
+    const room = this.sceneState(player);
     if (!room) return;
 
     const ownsToken = player.tokens.some(t => t.id === data.tokenId);
     if (!player.isHost && !ownsToken) return;
+    if (!Number.isInteger(data.hp) || !Number.isInteger(data.maxHp) || data.maxHp < 1 || data.maxHp > 1_000_000 || data.hp < 0 || data.hp > data.maxHp) return;
 
     const token = room.tokens.find(t => t.id === data.tokenId);
-    if (!token) return;
+    if (!token || (token.sceneId ?? `initial-${player.roomId}`) !== (player.sceneId ?? `initial-${player.roomId}`)) return;
+    const alternative = !!player.sceneId && player.sceneId !== `initial-${player.roomId}`;
+    if (alternative) {
+      try {
+        const active = await this.access.activeSceneForUser(player.roomId, player.userId!);
+        if (active.sceneId !== player.sceneId) return;
+        const result = await this.prisma.token.updateMany({
+          where: { id: data.tokenId, roomId: player.roomId, sceneId: player.sceneId },
+          data: { hp: data.hp, maxHp: data.maxHp },
+        });
+        if (result.count !== 1) return;
+      } catch {
+        client.emit('room-error', { message: 'Não foi possível salvar o HP nesta cena.' });
+        return;
+      }
+    }
     token.hp = data.hp;
     token.maxHp = data.maxHp;
 
@@ -1147,9 +1234,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect, On
       maxHp: data.maxHp,
     });
 
-    this.prisma.token
-      .update({ where: { id: data.tokenId }, data: { hp: data.hp, maxHp: data.maxHp } })
-      .catch(() => {});
+    if (!alternative) {
+      this.prisma.token
+        .update({ where: { id: data.tokenId }, data: { hp: data.hp, maxHp: data.maxHp } })
+        .catch(() => {});
+    }
   }
 
   @SubscribeMessage('chat-message')
